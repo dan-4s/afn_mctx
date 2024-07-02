@@ -1,3 +1,21 @@
+# Monte Carlo tree search for adversarial flow networks
+We extend the concept of MCTS from the Gumbel AlphaZero case to a
+GFlowNet derivative called an adversarial flow network (AFN). These
+networks have to satisfy a set of constraints such that flow between
+states is preserved. MCTS is required to build better estimates of 
+the value (flow) of a state and to select better actions based on
+these estimates in inference. We also aim to improve the sample
+efficiency of training AFNs by using MCTS in the training process.
+
+The MCTS method we use is similar to that described by [Morozov et al.](https://arxiv.org/abs/2406.13655).
+In essence, the tree is searched with epsilon-greedy exploration on
+the softmax of the current Q-value estimates. Then, once a node is
+expanded, propagate the Q-value (backwards prob * reward or flow
+estimate) up the tree to accumulate in all parents. This results
+in a consistent flow estimate at the root which can be used to 
+construct valid flow and policy estimates!
+
+----------------------------
 # Mctx: MCTS-in-JAX
 
 Mctx is a library with a [JAX](https://github.com/google/jax)-native
