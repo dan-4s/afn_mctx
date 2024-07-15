@@ -231,6 +231,106 @@ def gumbel_muzero_policy(
       search_tree=search_tree)
 
 
+def gumbel_aflownet_policy(
+    params: base.Params,
+    rng_key: chex.PRNGKey,
+    root: base.RootFnOutput,
+    recurrent_fn: base.RecurrentFn,
+    num_simulations: int,
+    invalid_actions: Optional[chex.Array] = None,
+    max_depth: Optional[int] = None,
+    loop_fn: base.LoopFn = jax.lax.fori_loop,
+    *,
+    qtransform: base.QTransform = qtransforms.qtransform_completed_by_mix_value,
+    max_num_considered_actions: int = 16,
+    gumbel_scale: chex.Numeric = 1.,
+) -> base.PolicyOutput[action_selection.GumbelMuZeroExtraData]:
+  """Runs Gumbel search for AFlowNets and returns the `PolicyOutput`.
+
+  Args:
+    params: params to be forwarded to root and recurrent functions.
+    rng_key: random number generator state, the key is consumed.
+    root: a `(prior_logits, value, embedding)` `RootFnOutput`. The
+      `prior_logits` are from a policy network. The shapes are
+      `([B, num_actions], [B], [B, ...])`, respectively.
+    recurrent_fn: a callable to be called on the leaf nodes and unvisited
+      actions retrieved by the simulation step, which takes as args
+      `(params, rng_key, action, embedding)` and returns a `RecurrentFnOutput`
+      and the new state embedding. The `rng_key` argument is consumed.
+    num_simulations: the number of simulations.
+    invalid_actions: a mask with invalid actions. Invalid actions
+      have ones, valid actions have zeros in the mask. Shape `[B, num_actions]`.
+    max_depth: maximum search tree depth allowed during simulation.
+    loop_fn: Function used to run the simulations. It may be required to pass
+      hk.fori_loop if using this function inside a Haiku module.
+    qtransform: function to obtain completed Q-values for a node.
+    max_num_considered_actions: the maximum number of actions expanded at the
+      root node. A smaller number of actions will be expanded if the number of
+      valid actions is smaller.
+    gumbel_scale: scale for the Gumbel noise. Evalution on perfect-information
+      games can use gumbel_scale=0.0.
+
+  Returns:
+    `PolicyOutput` containing the proposed action, action_weights and the used
+    search tree.
+  """
+  # Masking invalid actions.
+  root = root.replace(
+      prior_logits=_mask_invalid_actions(root.prior_logits, invalid_actions))
+
+  # Generating Gumbel.
+  rng_key, gumbel_rng = jax.random.split(rng_key)
+  gumbel = gumbel_scale * jax.random.gumbel(
+      gumbel_rng, shape=root.prior_logits.shape, dtype=root.prior_logits.dtype)
+
+  # Searching.
+  extra_data = action_selection.GumbelMuZeroExtraData(root_gumbel=gumbel)
+  search_tree = search.search(
+      params=params,
+      rng_key=rng_key,
+      root=root,
+      recurrent_fn=recurrent_fn,
+      root_action_selection_fn=functools.partial(
+          action_selection.gumbel_muzero_root_action_selection,
+          num_simulations=num_simulations,
+          max_num_considered_actions=max_num_considered_actions,
+          qtransform=qtransform,
+      ),
+      interior_action_selection_fn=functools.partial(
+          action_selection.gumbel_muzero_interior_action_selection,
+          qtransform=qtransform,
+      ),
+      num_simulations=num_simulations,
+      max_depth=max_depth,
+      invalid_actions=invalid_actions,
+      extra_data=extra_data,
+      loop_fn=loop_fn,
+      backward_method="AFN")
+  summary = search_tree.summary()
+
+  # Acting with the best action from the most visited actions.
+  # The "best" action has the highest `gumbel + logits + q`.
+  # Inside the minibatch, the considered_visit can be different on states with
+  # a smaller number of valid actions.
+  considered_visit = jnp.max(summary.visit_counts, axis=-1, keepdims=True)
+  # The completed_qvalues include imputed values for unvisited actions.
+  completed_qvalues = jax.vmap(qtransform, in_axes=[0, None])(  # pytype: disable=wrong-arg-types  # numpy-scalars  # pylint: disable=line-too-long
+      search_tree, search_tree.ROOT_INDEX)
+  to_argmax = seq_halving.score_considered(
+      considered_visit, gumbel, root.prior_logits, completed_qvalues,
+      summary.visit_counts)
+  action = action_selection.masked_argmax(to_argmax, invalid_actions)
+
+  # Producing action_weights usable to train the policy network.
+  completed_search_logits = _mask_invalid_actions(
+      root.prior_logits + completed_qvalues, invalid_actions)
+  action_weights = jax.nn.softmax(completed_search_logits)
+  return base.PolicyOutput(
+      action=action,
+      action_weights=action_weights,
+      search_tree=search_tree)
+
+
 def stochastic_muzero_policy(
     params: chex.ArrayTree,
     rng_key: chex.PRNGKey,
@@ -477,7 +577,7 @@ def _make_stochastic_recurrent_fn(
           expanded_is_decision,
           decision_leaf, chance_leaf)
 
-    output = jax.tree.map(_broadcast_where,
+    output = jax.tree_map(_broadcast_where,
                           output_if_decision_node,
                           output_if_chance_node)
     return output, new_state

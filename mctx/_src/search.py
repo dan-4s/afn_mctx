@@ -19,6 +19,7 @@ from typing import Any, NamedTuple, Optional, Tuple, TypeVar
 import chex
 import jax
 import jax.numpy as jnp
+import jax.scipy as jsp
 
 from mctx._src import action_selection
 from mctx._src import base
@@ -40,7 +41,9 @@ def search(
     max_depth: Optional[int] = None,
     invalid_actions: Optional[chex.Array] = None,
     extra_data: Any = None,
-    loop_fn: base.LoopFn = jax.lax.fori_loop) -> Tree:
+    loop_fn: base.LoopFn = jax.lax.fori_loop,
+    backward_method: Optional[str] = None,
+    alpha: Optional[float] = 1.0) -> Tree:
   """Performs a full search and returns sampled actions.
 
   In the shape descriptions, `B` denotes the batch dimension.
@@ -67,6 +70,9 @@ def search(
     extra_data: extra data passed to `tree.extra_data`. Shape `[B, ...]`.
     loop_fn: Function used to run the simulations. It may be required to pass
       hk.fori_loop if using this function inside a Haiku module.
+    backward_method: String which specifies the method for backwards flow
+      propagation. Options: `None` for classic Gumbel method and 'AFN'.
+    alpha: Number to use for the exponentiated flow.
 
   Returns:
     `SearchResults` containing outcomes of the search, e.g. `visit_counts`
@@ -100,7 +106,7 @@ def search(
     tree = expand(
         params, expand_key, tree, recurrent_fn, parent_index,
         action, next_node_index)
-    tree = backward(tree, next_node_index)
+    tree = backward(tree, next_node_index, backward_method, alpha)
     loop_state = rng_key, tree
     return loop_state
 
@@ -160,6 +166,8 @@ def simulate(
     depth = state.depth + 1
     is_before_depth_cutoff = depth < max_depth
     is_visited = next_node_index != Tree.UNVISITED
+    # TODO: is_continuing could easily be appended with another condition:
+    #   is_finished, to prevent further spurious searching of the tree.
     is_continuing = jnp.logical_and(is_visited, is_before_depth_cutoff)
     return _SimulationState(  # pytype: disable=wrong-arg-types  # jax-types
         rng_key=rng_key,
@@ -223,6 +231,7 @@ def expand(
       lambda x: x[batch_range, parent_index], tree.embeddings)
 
   # Evaluate and create a new node.
+  # TODO: Edit the recurrent function to have the discount be the flow backpropagation!
   step, embedding = recurrent_fn(params, rng_key, action, embedding)
   chex.assert_shape(step.prior_logits, [batch_size, tree.num_actions])
   chex.assert_shape(step.reward, [batch_size])
@@ -244,10 +253,12 @@ def expand(
           tree.action_from_parent, action, next_node_index))
 
 
-@jax.vmap
+@functools.partial(jax.vmap, in_axes=[0, 0, None, None])
 def backward(
     tree: Tree[T],
-    leaf_index: chex.Numeric) -> Tree[T]:
+    leaf_index: chex.Numeric,
+    backward_method: str,
+    alpha: float) -> Tree[T]:
   """Goes up and updates the tree until all nodes reached the root.
 
   Args:
@@ -284,10 +295,58 @@ def backward(
             tree.children_visits, children_counts, parent, action))
 
     return tree, leaf_value, parent
+  
+  def afn_body_fun(loop_state):
+    # Here we update the value of our parent, so we start by reversing.
+    tree, leaf_value, index = loop_state
+    parent = tree.parents[index]
+    count = tree.node_visits[parent]
+    action = tree.action_from_parent[index]
+    log_reward = tree.children_rewards[parent, action] # Do not use.
+    log_flow = tree.children_values[parent]
+    # NOTE: Cannot simply use the discount factors since we won't have updated
+    #   QF estimates! Need to use the currently known child values which are in
+    #   reality the log QF values. The reward is in log space. So we can
+    #   proceed by summation.
+    # TODO: edit this to include the AFN backward update. It'll look something like:
+    #   leaf_value * sum(F^alpha)/ (sum(F^alpha+1) * F) but in log() domain
+    # TODO: edit children discounts to be the flow backpropagation function!!!
+    #   I really think this would be the easiest solution!
 
+    # Get the leaf value from the current player's point of view (negate the
+    # log reward).
+    leaf_value = tree.children_discounts[parent, action] * leaf_value
+
+    # Then, use the prior logits (which are for us log QF values).
+    # TODO: Can we edit the prior logits here instead of in the function:
+    #       update_tree_node()? I feel like we can.
+    prior_logits = tree.children_prior_logits[parent]
+    new_parent_value = (
+      log_flow[action] - prior_logits[parent, action] +
+      jsp.special.logsumexp((alpha + 1) * prior_logits[parent]) -
+      jsp.special.logsumexp(alpha * prior_logits[parent])
+    )
+    # Take the average parent value with this update since we don't want a
+    # single bad estimate to throw off the entire estimate.
+    parent_value = (
+        tree.node_values[parent] * count + new_parent_value) / (count + 1.0)
+    children_values = tree.node_values[index]
+    children_counts = tree.children_visits[parent, action] + 1
+
+    tree = tree.replace(
+        node_values=update(tree.node_values, parent_value, parent),
+        node_visits=update(tree.node_visits, count + 1, parent),
+        children_values=update(
+            tree.children_values, children_values, parent, action),
+        children_visits=update(
+            tree.children_visits, children_counts, parent, action))
+
+    return tree, leaf_value, parent
+
+  body_method = afn_body_fun if(backward_method == "AFN") else body_fun
   leaf_index = jnp.asarray(leaf_index, dtype=jnp.int32)
   loop_state = (tree, tree.node_values[leaf_index], leaf_index)
-  tree, _, _ = jax.lax.while_loop(cond_fun, body_fun, loop_state)
+  tree, _, _ = jax.lax.while_loop(cond_fun, body_method, loop_state)
 
   return tree
 
@@ -325,6 +384,10 @@ def update_tree_node(
   chex.assert_shape(prior_logits, (batch_size, tree.num_actions))
 
   # When using max_depth, a leaf can be expanded multiple times.
+  # TODO: might be problematic that the expanded node values are not averaged.
+  #   Actually, it shouldn't be, since these are just leaf nodes which do not
+  #   get any value if they are terminal. As such, the value they have is the
+  #   value estimate of the predictor, leaving this a noisy estimate anyways.
   new_visit = tree.node_visits[batch_range, node_index] + 1
   updates = dict(  # pylint: disable=use-dict-literal
       children_prior_logits=batch_update(
