@@ -12,8 +12,8 @@ import jax
 from jax import Array
 from jax.scipy.special import logsumexp
 import jax.numpy as jnp
-from .. import mctx
-from binary_env import Game, GameState
+import mctx
+from examples.binary_env import Game, GameState
 
 FLAGS = flags.FLAGS
 flags.DEFINE_integer("seed", 42, "Random seed.")
@@ -63,7 +63,7 @@ def _run_gumbel_alphazero_demo(
   qvalues = jax.random.uniform(q_rng, shape=prior_logits.shape)
 
   # Use the prior policy and q-value estimates to generate the value estimate
-  # of the root node.
+  # of the root node. Shape = [B].
   root_value = jnp.sum(jax.nn.softmax(prior_logits) * qvalues, axis=-1)
 
   # The root output is used in the search tree.
@@ -165,7 +165,8 @@ def _run_aflownet_demo(
 
   # Use the prior policy and q-value estimates to generate the value estimate
   # of the root node. TODO: Can be done differently, will investigate later.
-  log_root_flow = logsumexp((alpha + 1)*log_flows) - logsumexp(alpha*log_flows)
+  log_root_flow = (logsumexp((alpha + 1)*log_flows, axis=1) -
+                   logsumexp(alpha*log_flows, axis=1))
 
   # The root output is used in the search tree.
   root = mctx.RootFnOutput(
@@ -207,7 +208,8 @@ def _make_afn_recurrent_fn(game_obj: Game, num_actions: int, alpha: float):
     # are for AFNs this time, so we have to convert them to log-space.
     states = jax.vmap(game_obj.step)(state=states, action=action)
     reward = jax.vmap(game_obj.rewards, in_axes=[0, None])(states, True)
-    reward = jnp.log(reward)
+    log_reward = jnp.log(reward)
+    reward = jnp.where(reward == 0, 0.0, log_reward)
     terminated = states.game_over
 
     # NOTE: Invert rewards to achieve correct operation! This is because the
@@ -240,17 +242,17 @@ def _make_afn_recurrent_fn(game_obj: Game, num_actions: int, alpha: float):
 
 
 def main(_):
-  rng_key = jax.random.PRNGKey(FLAGS.seed)
+  rng_key = jax.random.PRNGKey(FLAGS.seed) # TODO: Change the seed.
   jitted_run_demo = jax.jit(_run_gumbel_alphazero_demo)
-  print("\n================================")
-  print("\tAlphaZero demos")
-  for i in range(FLAGS.num_runs):
-    rng_key, policy_output = jitted_run_demo(rng_key)
+  # print("\n================================")
+  # print("\tAlphaZero demos")
+  # for i in range(FLAGS.num_runs):
+  #   rng_key, policy_output = jitted_run_demo(rng_key)
 
-    avg_action_weights = jnp.average(policy_output.action_weights, axis=0)
-    print(f"Run {i+1} results")
-    print(f"\tP(s1 | s0) = {avg_action_weights[0]:.2f}")
-    print(f"\tP(s2 | s0) = {avg_action_weights[1]:.2f}")
+  #   avg_action_weights = jnp.average(policy_output.action_weights, axis=0)
+  #   print(f"Run {i+1} results")
+  #   print(f"\tP(s1 | s0) = {avg_action_weights[0]:.2f}")
+  #   print(f"\tP(s2 | s0) = {avg_action_weights[1]:.2f}")
   
   print("\n============================")
   print("\tAFN demos")
@@ -262,6 +264,12 @@ def main(_):
     print(f"Run {i+1} results")
     print(f"\tP(s1 | s0) = {avg_action_weights[0]:.2f}")
     print(f"\tP(s2 | s0) = {avg_action_weights[1]:.2f}")
+    tree = policy_output.search_tree
+    print(f"PARENTS  = {tree.parents[0][0:7]}")
+    print(f"ACTION   = {tree.action_from_parent[0][0:7]}")
+    print(f"NVALUE   = {tree.node_values[0][0:7]}")
+    print(f"Chld_REW = {tree.children_rewards[0][0:7]}")
+    print(f"Chld_VAL = {tree.children_values[0][0:7]}")
     breakpoint()
 
 

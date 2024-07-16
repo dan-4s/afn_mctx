@@ -66,7 +66,7 @@ class Game:
   def is_terminal(self, state: GameState) -> Array:
     return state.game_over
   
-  def rewards(self, state: GameState, is_afn: bool = True):
+  def rewards(self, state: GameState, is_afn: bool = True) -> Array:
     """
     Rewards must be given from the opposing player's point of view! This is
     because the reward is technically tallied when the state is terminal, but
