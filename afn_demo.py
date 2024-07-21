@@ -19,7 +19,7 @@ FLAGS = flags.FLAGS
 flags.DEFINE_integer("seed", 42, "Random seed.")
 flags.DEFINE_integer("batch_size", 4, "Batch size.")
 flags.DEFINE_integer("num_actions", 2, "Number of actions.")
-flags.DEFINE_integer("num_simulations", 100, "Number of simulations.")
+flags.DEFINE_integer("num_simulations", 4, "Number of simulations.")
 flags.DEFINE_integer("max_num_considered_actions", 2,
                      "The maximum number of actions expanded at the root.")
 flags.DEFINE_integer("num_runs", 1, "Number of runs on random data.")
@@ -160,7 +160,8 @@ def _run_aflownet_demo(
 
   # The prior flow and policy estimates will be random (no NN). log_flows is
   # technically QF here, but we will not worry about exact estimations here.
-  log_flows = jax.random.uniform(q_rng, shape=[batch_size, num_actions])
+  # log_flows = jax.random.uniform(q_rng, shape=[batch_size, num_actions])
+  log_flows = jnp.log(jnp.array([[0.1089, 1.089]] * batch_size))
   prior_logits = log_flows # These can be log flows, a softmax, or log softmax.
 
   # Use the prior policy and q-value estimates to generate the value estimate
@@ -178,7 +179,7 @@ def _run_aflownet_demo(
 
   # The recurrent_fn takes care of environmental interactions estimating policy
   # and value priors if these are used in the algorithms.
-  recurrent_fn = _make_afn_recurrent_fn(game_obj, num_actions, alpha)
+  recurrent_fn = _make_afn_recurrent_fn(game_obj, num_actions)
 
   # Running the search.
   policy_output = mctx.gumbel_aflownet_policy(
@@ -197,7 +198,7 @@ def _run_aflownet_demo(
   return rng_key, policy_output
 
 
-def _make_afn_recurrent_fn(game_obj: Game, num_actions: int, alpha: float):
+def _make_afn_recurrent_fn(game_obj: Game, num_actions: int):
   """
     Returns a recurrent_fn for an AlphaZero on a 2-level binary tree.
   """
@@ -220,8 +221,30 @@ def _make_afn_recurrent_fn(game_obj: Game, num_actions: int, alpha: float):
     batch_size = reward.shape[0]
     rng_key, QF_rng_key = jax.random.split(rng_key, 2)
     rng_key, flow_rng_key = jax.random.split(rng_key, 2)
-    predicted_QF = jax.random.uniform(QF_rng_key, (batch_size, num_actions))
-    predicted_flow = jax.random.uniform(flow_rng_key, (batch_size,))
+    
+    # Set the ground truth probabilities. (I know this is ugly, just bear with me).
+    def generate_QF(board_states: chex.Array):
+      return jnp.select(
+        condlist=[board_states == 0, board_states == 1, board_states == 2],
+        choicelist=[jnp.array([0.1089, 1.089]), jnp.array([10, 1]), jnp.array([1, 0.1])],
+        default=0.5,
+      ) 
+    # predicted_QF = 0.5 * jnp.ones((batch_size, num_actions))
+    # predicted_QF = predicted_QF.at[states.board == 0].set(jnp.array([0.0909, 0.9091]))
+    # predicted_QF = predicted_QF.at[states.board == 1].set(jnp.array([0.99, 0.01]))
+    # predicted_QF = predicted_QF.at[states.board == 2].set(jnp.array([0.99, 0.01]))
+    predicted_QF = jax.vmap(generate_QF)(states.board)
+    predicted_QF = jnp.log(predicted_QF)
+
+    # Set the ground truth flow values.
+    def generate_parent_flow(board_states: chex.Array):
+      return jnp.select(
+        condlist=[board_states == 0, board_states == 1, board_states == 2],
+        choicelist=[1, 0.1089, 1.089],
+        default=1.0,
+      )
+    predicted_flow = jax.vmap(generate_parent_flow)(states.board)
+    predicted_flow = jnp.log(predicted_flow)
     predicted_flow = jnp.where(terminated, reward, predicted_flow)
 
     # Since this is AlphaZero-like in a two-player environment, we want to
@@ -267,9 +290,10 @@ def main(_):
     tree = policy_output.search_tree
     print(f"PARENTS  = {tree.parents[0][0:7]}")
     print(f"ACTION   = {tree.action_from_parent[0][0:7]}")
-    print(f"NVALUE   = {tree.node_values[0][0:7]}")
-    print(f"Chld_REW = {tree.children_rewards[0][0:7]}")
-    print(f"Chld_VAL = {tree.children_values[0][0:7]}")
+    print(f"NVALUE   = {jnp.exp(tree.node_values[0][0:7])}")
+    print(f"Chld_REW = {jnp.exp(tree.children_rewards[0][0:7])}")
+    print(f"Chld_VAL = {jnp.exp(tree.children_values[0][0:7])}")
+    print(f"Chld_Logits = {jnp.exp(tree.children_prior_logits[0][0:7])}")
     breakpoint()
 
 

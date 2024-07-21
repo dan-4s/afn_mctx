@@ -321,7 +321,7 @@ def backward(
     # TODO: Can we edit the prior logits here instead of in the function:
     #       update_tree_node()? I feel like we can.
     prior_logits = tree.children_prior_logits
-    new_parent_value = (
+    new_parent_value = -(
       log_flow[action] - prior_logits[parent, action] +
       jsp.special.logsumexp((alpha + 1) * prior_logits[parent]) -
       jsp.special.logsumexp(alpha * prior_logits[parent])
