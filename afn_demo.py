@@ -12,6 +12,7 @@ import jax
 from jax import Array
 from jax.scipy.special import logsumexp
 import jax.numpy as jnp
+import matplotlib.pyplot as plt
 import mctx
 from examples.binary_env import Game, GameState
 
@@ -138,6 +139,9 @@ def _make_alphazero_recurrent_fn(game_obj: Game, num_actions: int):
 
 def _run_aflownet_demo(
     rng_key: chex.PRNGKey,
+    num_simulations,
+    priors_method,
+    noise_level,
   ) -> Tuple[chex.PRNGKey, DemoOutput]:
   """
   Runs a search algorithm on a 2-level binary tree using MCTS for AFlowNets.
@@ -146,7 +150,7 @@ def _run_aflownet_demo(
   # Get all the flag values.
   batch_size = FLAGS.batch_size
   num_actions = FLAGS.num_actions
-  num_simulations = FLAGS.num_simulations
+  # num_simulations = FLAGS.num_simulations
   max_num_considered_actions = FLAGS.max_num_considered_actions
   alpha = FLAGS.alpha
 
@@ -179,7 +183,7 @@ def _run_aflownet_demo(
 
   # The recurrent_fn takes care of environmental interactions estimating policy
   # and value priors if these are used in the algorithms.
-  recurrent_fn = _make_afn_recurrent_fn(game_obj, num_actions)
+  recurrent_fn = _make_afn_recurrent_fn(game_obj, num_actions, priors_method, noise_level)
 
   # Running the search.
   policy_output = mctx.gumbel_aflownet_policy(
@@ -198,7 +202,7 @@ def _run_aflownet_demo(
   return rng_key, policy_output
 
 
-def _make_afn_recurrent_fn(game_obj: Game, num_actions: int):
+def _make_afn_recurrent_fn(game_obj: Game, num_actions: int, priors_method: str, noise_level: float):
   """
     Returns a recurrent_fn for an AlphaZero on a 2-level binary tree.
   """
@@ -217,34 +221,45 @@ def _make_afn_recurrent_fn(game_obj: Game, num_actions: int):
     #       rewards are technically from the previous player's point of view!
     reward = -reward
     
-    # Predict logits and values using RNG.
-    batch_size = reward.shape[0]
-    rng_key, QF_rng_key = jax.random.split(rng_key, 2)
-    rng_key, flow_rng_key = jax.random.split(rng_key, 2)
-    
-    # Set the ground truth probabilities. (I know this is ugly, just bear with me).
-    def generate_QF(board_states: chex.Array):
-      return jnp.select(
-        condlist=[board_states == 0, board_states == 1, board_states == 2],
-        choicelist=[jnp.array([0.1089, 1.089]), jnp.array([10, 1]), jnp.array([1, 0.1])],
-        default=0.5,
-      ) 
-    # predicted_QF = 0.5 * jnp.ones((batch_size, num_actions))
-    # predicted_QF = predicted_QF.at[states.board == 0].set(jnp.array([0.0909, 0.9091]))
-    # predicted_QF = predicted_QF.at[states.board == 1].set(jnp.array([0.99, 0.01]))
-    # predicted_QF = predicted_QF.at[states.board == 2].set(jnp.array([0.99, 0.01]))
-    predicted_QF = jax.vmap(generate_QF)(states.board)
-    predicted_QF = jnp.log(predicted_QF)
+    if(priors_method == "ground_truth" or priors_method == "mixed"):
+      # Set the ground truth probabilities. (I know this is ugly, just bear with me).
+      def generate_QF(board_states: chex.Array):
+        return jnp.select(
+          condlist=[board_states == 0, board_states == 1, board_states == 2],
+          choicelist=[jnp.array([0.1089, 1.089]), jnp.array([10, 1]), jnp.array([1, 0.1])],
+          default=0.5,
+        ) 
+      predicted_QF_gt = jax.vmap(generate_QF)(states.board)
+      predicted_QF_gt = jnp.log(predicted_QF_gt)
 
-    # Set the ground truth flow values.
-    def generate_parent_flow(board_states: chex.Array):
-      return jnp.select(
-        condlist=[board_states == 0, board_states == 1, board_states == 2],
-        choicelist=[1, 0.1089, 1.089],
-        default=1.0,
-      )
-    predicted_flow = jax.vmap(generate_parent_flow)(states.board)
-    predicted_flow = jnp.log(predicted_flow)
+      # Set the ground truth flow values.
+      def generate_parent_flow(board_states: chex.Array):
+        return jnp.select(
+          condlist=[board_states == 0, board_states == 1, board_states == 2],
+          choicelist=[1, 0.1089, 1.089],
+          default=1.0,
+        )
+      predicted_flow_gt = jax.vmap(generate_parent_flow)(states.board)
+      predicted_flow_gt = jnp.log(predicted_flow_gt)
+    
+    if(priors_method == "random" or priors_method == "mixed"):
+      # Predict logits and values using RNG.
+      batch_size = reward.shape[0]
+      rng_key, QF_rng_key = jax.random.split(rng_key, 2)
+      rng_key, flow_rng_key = jax.random.split(rng_key, 2)
+      predicted_QF_r = jax.random.normal(QF_rng_key, shape=(batch_size, num_actions))
+      predicted_flow_r = jax.random.normal(flow_rng_key, shape=(batch_size,))
+    
+    if(priors_method == "mixed"):
+      predicted_flow = predicted_flow_gt + noise_level * predicted_flow_r
+      predicted_QF = predicted_QF_gt + noise_level * predicted_QF_r
+    elif(priors_method == "ground_truth"):
+      predicted_flow = predicted_flow_gt
+      predicted_QF = predicted_QF_gt
+    else:
+      predicted_flow = predicted_flow_r
+      predicted_QF = predicted_QF_r
+    
     predicted_flow = jnp.where(terminated, reward, predicted_flow)
 
     # Since this is AlphaZero-like in a two-player environment, we want to
@@ -279,22 +294,62 @@ def main(_):
   
   print("\n============================")
   print("\tAFN demos")
-  jitted_run_demo = jax.jit(_run_aflownet_demo)
-  for i in range(FLAGS.num_runs):
-    rng_key, policy_output = jitted_run_demo(rng_key)
+  jitted_run_demo = jax.jit(_run_aflownet_demo, static_argnums=[1,2])
+  num_sims = [50, 100, 1000]
+  noise_schedule = jnp.arange(start=0, stop=2.1, step=0.2)
+  gt_flows = jnp.array([1.0, 11/101, 110/101])
+  gt_log_flows = jnp.log(gt_flows)
+  sims_to_errors = {}
+  sims_to_KLs = {}
+  for sims in num_sims:
+    all_errors = []
+    all_KLs = []
+    for i in range(len(noise_schedule)):
+      #We'll reuse the same rng_key for all experiments.
+      _, policy_output = jitted_run_demo(rng_key, sims, "mixed", noise_schedule[i])
 
-    avg_action_weights = jnp.average(policy_output.action_weights, axis=0)
-    print(f"Run {i+1} results")
-    print(f"\tP(s1 | s0) = {avg_action_weights[0]:.2f}")
-    print(f"\tP(s2 | s0) = {avg_action_weights[1]:.2f}")
-    tree = policy_output.search_tree
-    print(f"PARENTS  = {tree.parents[0][0:7]}")
-    print(f"ACTION   = {tree.action_from_parent[0][0:7]}")
-    print(f"NVALUE   = {jnp.exp(tree.node_values[0][0:7])}")
-    print(f"Chld_REW = {jnp.exp(tree.children_rewards[0][0:7])}")
-    print(f"Chld_VAL = {jnp.exp(tree.children_values[0][0:7])}")
-    print(f"Chld_Logits = {jnp.exp(tree.children_prior_logits[0][0:7])}")
-    breakpoint()
+      # Compute the error on the estimated flows.
+      tree = policy_output.search_tree
+      root_error = jnp.exp(tree.node_values[:,0]) - gt_flows[0]
+      root_error = jnp.reshape(root_error, shape=(FLAGS.batch_size,1))
+      child_error = jnp.exp(tree.children_values[:, 0]) - gt_flows[1:]
+      total_error = jnp.concat((root_error, child_error), axis=1)
+      average_error = jnp.average(total_error).item()
+      all_errors.append(average_error)
+
+      # Compute the KL divergence of the root policy.
+      gt_policy = jax.nn.softmax(gt_log_flows[1:])
+      mcts_policy = jax.nn.softmax(tree.children_values[:, 0, :])
+      policy_div = jax.scipy.special.kl_div(gt_policy, mcts_policy)
+      avg_policy_div = jnp.average(policy_div)
+      all_KLs.append(avg_policy_div)
+    sims_to_errors[sims] = all_errors
+    sims_to_KLs[sims] = all_KLs
+  
+  # Print graphs of the KL and error over the noise schedule.
+  fig = plt.figure(figsize=(8,6))
+  plt.plot(noise_schedule, sims_to_errors[50], "-x", label="50 sims")
+  plt.plot(noise_schedule, sims_to_errors[100], "-o", label="100 sims")
+  plt.plot(noise_schedule, sims_to_errors[1000], "-^", label="1000 sims")
+  plt.title("Average error on flow, varying noise schedules")
+  plt.ylabel("Average error")
+  plt.xlabel("Noise schedule")
+  plt.grid()
+  plt.legend()
+  plt.savefig("avg_error.png")
+  plt.close()
+
+  fig = plt.figure(figsize=(8,6))
+  plt.plot(noise_schedule, sims_to_KLs[50], "-x", label="50 sims")
+  plt.plot(noise_schedule, sims_to_KLs[100], "-o", label="100 sims")
+  plt.plot(noise_schedule, sims_to_KLs[1000], "-^", label="1000 sims")
+  plt.title("Average KL divergence of policies, varying noise schedules")
+  plt.ylabel("Average KL divergence")
+  plt.xlabel("Noise schedule")
+  plt.grid()
+  plt.legend()
+  plt.savefig("avg_kl.png")
+  plt.close()
 
 
 if __name__ == "__main__":

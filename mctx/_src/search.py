@@ -297,45 +297,49 @@ def backward(
     return tree, leaf_value, parent
   
   def afn_body_fun(loop_state):
+    """
+    NOTE: `leaf_value` is here used to represent the flow of the prior node in
+          the search tree. We can also extract this information from
+          `tree.node_values[index]`. We keep the notion of a `leaf_value` here
+          in order to maintain backwards compatiblity with MCTX. Leaf values
+          are used to represent flow estimates from lower in the tree, in
+          distinction from `children_values`, which are only updated after we
+          have passed the relevant child node.
+    """
     # Here we update the value of our parent, so we start by reversing.
     tree, leaf_value, index = loop_state
     parent = tree.parents[index]
     count = tree.node_visits[parent]
     action = tree.action_from_parent[index]
-    log_reward = tree.children_rewards[parent, action] # Do not use.
-    log_flow = tree.children_values[parent]
-    # NOTE: Cannot simply use the discount factors since we won't have updated
-    #   QF estimates! Need to use the currently known child values which are in
-    #   reality the log QF values. The reward is in log space. So we can
-    #   proceed by summation.
-    # TODO: edit this to include the AFN backward update. It'll look something like:
-    #   leaf_value * sum(F^alpha)/ (sum(F^alpha+1) * F) but in log() domain
-    # TODO: edit children discounts to be the flow backpropagation function!!!
-    #   I really think this would be the easiest solution!
 
-    # Get the leaf value from the current player's point of view (negate the
-    # log reward).
-    leaf_value = tree.children_discounts[parent, action] * leaf_value
-
-    # Then, use the prior logits (which are for us log QF values).
-    # TODO: Can we edit the prior logits here instead of in the function:
-    #       update_tree_node()? I feel like we can.
-    prior_logits = tree.children_prior_logits
+    # Use the current tree.node_values as the flow estimates, and therefore,
+    # as the current estimate of prior logits.
+    # prior_logits = tree.children_prior_logits
+    prior_logits = tree.children_values
     new_parent_value = -(
-      log_flow[action] - prior_logits[parent, action] +
+      leaf_value - prior_logits[parent, action] +
       jsp.special.logsumexp((alpha + 1) * prior_logits[parent]) -
       jsp.special.logsumexp(alpha * prior_logits[parent])
     )
+    # new_parent_value = -(
+    #   log_flow[action] - prior_logits[parent, action] +
+    #   jsp.special.logsumexp((alpha + 1) * prior_logits[parent]) -
+    #   jsp.special.logsumexp(alpha * prior_logits[parent])
+    # )
     # Take the average parent value with this update since we don't want a
     # single bad estimate to throw off the entire estimate.
     parent_value = (
         tree.node_values[parent] * count + new_parent_value) / (count + 1.0)
+    leaf_value = parent_value
     children_values = tree.node_values[index]
+    children_prior_logits = tree.node_values[index]
     children_counts = tree.children_visits[parent, action] + 1
 
     tree = tree.replace(
         node_values=update(tree.node_values, parent_value, parent),
         node_visits=update(tree.node_visits, count + 1, parent),
+        children_prior_logits=update(tree.children_prior_logits,
+            children_prior_logits, parent, action),
         children_values=update(
             tree.children_values, children_values, parent, action),
         children_visits=update(
