@@ -316,6 +316,10 @@ def backward(
     # as the current estimate of prior logits.
     # prior_logits = tree.children_prior_logits
     prior_logits = tree.children_values
+    # TODO: TESTING Setting prior_logits[parent, action] = leaf_value. This has
+    #       a very similar update structure to the MENTS paper. Also shows
+    #       slight reduction in error compared to not doing it this way.
+    prior_logits = prior_logits.at[parent, action].set(leaf_value)
     new_parent_value = -(
       leaf_value - prior_logits[parent, action] +
       jsp.special.logsumexp((alpha + 1) * prior_logits[parent]) -
