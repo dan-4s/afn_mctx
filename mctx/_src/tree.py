@@ -51,6 +51,8 @@ class Tree(Generic[T]):
     `children_rewards` and the `children_values`.
   children_values: `[B, N, num_actions]` the value of the next node after the
     action.
+  children_QF_const: `[B, N, num_actions]` the softmax constant estimated for
+    each child.
   embeddings: `[B, N, ...]` the state embeddings of each node.
   root_invalid_actions: `[B, num_actions]` a mask with invalid actions at the
     root. In the mask, invalid actions have ones, and valid actions have zeros.
@@ -67,6 +69,7 @@ class Tree(Generic[T]):
   children_rewards: chex.Array  # [B, N, num_actions]
   children_discounts: chex.Array  # [B, N, num_actions]
   children_values: chex.Array  # [B, N, num_actions]
+  children_QF_const: chex.Array  # [B, N, num_actions]
   embeddings: Any  # [B, N, ...]
   root_invalid_actions: chex.Array  # [B, num_actions]
   extra_data: T  # [B, ...]

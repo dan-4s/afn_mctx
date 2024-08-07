@@ -242,6 +242,7 @@ def gumbel_aflownet_policy(
     loop_fn: base.LoopFn = jax.lax.fori_loop,
     *,
     qtransform: base.QTransform = qtransforms.qtransform_completed_by_mix_value,
+    backward_method: str = "AFN",
     max_num_considered_actions: int = 16,
     gumbel_scale: chex.Numeric = 1.,
 ) -> base.PolicyOutput[action_selection.GumbelMuZeroExtraData]:
@@ -264,6 +265,9 @@ def gumbel_aflownet_policy(
     loop_fn: Function used to run the simulations. It may be required to pass
       hk.fori_loop if using this function inside a Haiku module.
     qtransform: function to obtain completed Q-values for a node.
+    backward_method: Defaults to "AFN" but can also be AFN_CONST. The
+      difference is that AFN_CONST predicts the QF constant. Use this when
+      training with a KL divergence on the softmax of the children_values. 
     max_num_considered_actions: the maximum number of actions expanded at the
       root node. A smaller number of actions will be expanded if the number of
       valid actions is smaller.
@@ -305,7 +309,7 @@ def gumbel_aflownet_policy(
       invalid_actions=invalid_actions,
       extra_data=extra_data,
       loop_fn=loop_fn,
-      backward_method="AFN")
+      backward_method=backward_method)
   summary = search_tree.summary()
 
   # Acting with the best action from the most visited actions.

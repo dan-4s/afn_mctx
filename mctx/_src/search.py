@@ -231,7 +231,6 @@ def expand(
       lambda x: x[batch_range, parent_index], tree.embeddings)
 
   # Evaluate and create a new node.
-  # TODO: Edit the recurrent function to have the discount be the flow backpropagation!
   step, embedding = recurrent_fn(params, rng_key, action, embedding)
   chex.assert_shape(step.prior_logits, [batch_size, tree.num_actions])
   chex.assert_shape(step.reward, [batch_size])
@@ -315,15 +314,15 @@ def backward(
     # Use the current tree.node_values as the flow estimates, and therefore,
     # as the current estimate of prior logits.
     # prior_logits = tree.children_prior_logits
-    prior_logits = tree.children_values
+    prior_values = tree.children_values
     # TODO: TESTING Setting prior_logits[parent, action] = leaf_value. This has
     #       a very similar update structure to the MENTS paper. Also shows
     #       slight reduction in error compared to not doing it this way.
-    prior_logits = prior_logits.at[parent, action].set(leaf_value)
+    prior_values = prior_values.at[parent, action].set(leaf_value)
     new_parent_value = -(
-      leaf_value - prior_logits[parent, action] +
-      jsp.special.logsumexp((alpha + 1) * prior_logits[parent]) -
-      jsp.special.logsumexp(alpha * prior_logits[parent])
+      leaf_value - prior_values[parent, action] +
+      jsp.special.logsumexp((alpha + 1) * prior_values[parent]) -
+      jsp.special.logsumexp(alpha * prior_values[parent])
     )
     # new_parent_value = -(
     #   log_flow[action] - prior_logits[parent, action] +
@@ -350,8 +349,84 @@ def backward(
             tree.children_visits, children_counts, parent, action))
 
     return tree, leaf_value, parent
+  
+  def afn_const_body_fun(loop_state):
+    """
+    NOTE: This is almost the exact same as the afn_body_fun, but instead of
+          trusting the QF values since they are likely trained via a KL
+          divergence on a softmax-based policy, we need to predict the constant
+          of the softmax. As such, this backward function also predicts the
+          constant and uses it to correct the flow prediction.
+    """
+    # Here we update the value of our parent, so we start by reversing.
+    tree, leaf_value, index = loop_state
+    parent = tree.parents[index]
+    count = tree.node_visits[parent]
+    action = tree.action_from_parent[index]
+    child_consts = tree.children_QF_const[index]
+    child_visits = tree.children_visits[index]
+    sqrt_child_visits = jnp.sqrt(child_visits)
 
-  body_method = afn_body_fun if(backward_method == "AFN") else body_fun
+    # Estimate the constant from the children's constants. Two methods here
+    # again: 1) simple average, 2) Kolya's sqrt(N)-weighted average.
+    curr_QF_est_1 = jnp.sum(child_consts) / jnp.sum(child_visits)
+    curr_QF_est_2 = (jnp.sum(child_consts * sqrt_child_visits) /
+      jnp.sum(sqrt_child_visits))
+    
+    # Use the current tree.node_values as the flow estimates, and therefore,
+    # as the current estimate of prior logits.
+    prior_values = tree.children_values
+    # TODO: TESTING Setting prior_logits[parent, action] = leaf_value. This has
+    #       a very similar update structure to the MENTS paper. Also shows
+    #       slight reduction in error compared to not doing it this way.
+    prior_values = prior_values.at[parent, action].set(leaf_value)
+    pv_adjusted = prior_values[parent] - curr_QF_est_1 # Adjust the QF value.
+    new_parent_value = -(
+      leaf_value - pv_adjusted[action] +
+      jsp.special.logsumexp((alpha + 1) * pv_adjusted) -
+      jsp.special.logsumexp(alpha * pv_adjusted)
+    )
+
+    # Take the average parent value with this update since we don't want a
+    # single bad estimate to throw off the entire estimate.
+    parent_value = (
+        tree.node_values[parent] * count + new_parent_value) / (count + 1.0)
+    
+    # Estimate the QF constant on the new flow estimate.
+    """
+    NOTE: There are a ton of ways to estimate the constant on QF. The problem
+          with a tree search scenario is that in the current function, we only
+          have access to the current node, not to the nodes that come after the
+          current node. As such, we are restricted to estimating the constant
+          and propagating it up to the next level of the tree search.
+    """
+    QF_const_est = tree.children_prior_logits[parent, action] - parent_value
+    c_count = tree.children_visits[parent, action]
+    parent_QF_const = (tree.children_QF_const[parent, action] * c_count +
+                       QF_const_est) / (c_count + 1)
+
+    leaf_value = parent_value
+    children_values = tree.node_values[index]
+    children_counts = tree.children_visits[parent, action] + 1
+
+    tree = tree.replace(
+        node_values=update(tree.node_values, parent_value, parent),
+        node_visits=update(tree.node_visits, count + 1, parent),
+        children_QF_const=update(tree.children_QF_const, parent_QF_const,
+            parent, action),
+        children_values=update(
+            tree.children_values, children_values, parent, action),
+        children_visits=update(
+            tree.children_visits, children_counts, parent, action))
+
+    return tree, leaf_value, parent
+
+  if(backward_method == "AFN"):
+    body_method = afn_body_fun
+  elif(backward_method == "AFN_CONST"):
+    body_method = afn_const_body_fun
+  else:
+    body_method = body_fun
   leaf_index = jnp.asarray(leaf_index, dtype=jnp.int32)
   loop_state = (tree, tree.node_values[leaf_index], leaf_index)
   tree, _, _ = jax.lax.while_loop(cond_fun, body_method, loop_state)
@@ -446,6 +521,7 @@ def instantiate_tree_from_root(
       children_visits=jnp.zeros(batch_node_action, dtype=jnp.int32),
       children_rewards=jnp.zeros(batch_node_action, dtype=data_dtype),
       children_discounts=jnp.zeros(batch_node_action, dtype=data_dtype),
+      children_QF_const=jnp.zeros(batch_node_action, dtype=data_dtype),
       embeddings=jax.tree_util.tree_map(_zeros, root.embedding),
       root_invalid_actions=root_invalid_actions,
       extra_data=extra_data)

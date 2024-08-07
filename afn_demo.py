@@ -142,6 +142,7 @@ def _run_aflownet_demo(
     num_simulations,
     priors_method,
     noise_level,
+    backward_method,
   ) -> Tuple[chex.PRNGKey, DemoOutput]:
   """
   Runs a search algorithm on a 2-level binary tree using MCTS for AFlowNets.
@@ -197,6 +198,7 @@ def _run_aflownet_demo(
       qtransform=functools.partial(
           mctx.qtransform_completed_by_mix_value,
           use_mixed_value=False),
+      backward_method=backward_method, # AFN or AFN_CONST -> AFN doesn't predict the QF constant.
   )
 
   return rng_key, policy_output
@@ -294,7 +296,7 @@ def main(_):
   
   print("\n============================")
   print("\tAFN demos")
-  jitted_run_demo = jax.jit(_run_aflownet_demo, static_argnums=[1,2])
+  jitted_run_demo = jax.jit(_run_aflownet_demo, static_argnums=[1,2,4])
   num_sims = [50, 100, 1000]
   noise_schedule = jnp.arange(start=0, stop=2.1, step=0.2)
   gt_flows = jnp.array([1.0, 11/101, 110/101])
@@ -306,7 +308,8 @@ def main(_):
     all_KLs = []
     for i in range(len(noise_schedule)):
       #We'll reuse the same rng_key for all experiments.
-      _, policy_output = jitted_run_demo(rng_key, sims, "mixed", noise_schedule[i])
+      _, policy_output = jitted_run_demo(rng_key, sims, "mixed", noise_schedule[i], "AFN_CONST")
+      breakpoint()
 
       # Compute the error on the estimated flows.
       tree = policy_output.search_tree
@@ -333,7 +336,7 @@ def main(_):
   plt.plot(noise_schedule, sims_to_errors[1000], "-^", label="1000 sims")
   plt.title("Average error on flow, varying noise schedules")
   plt.ylabel("Average error")
-  plt.xlabel("Noise schedule")
+  plt.xlabel("Noise level")
   plt.grid()
   plt.legend()
   plt.savefig("avg_error.png")
@@ -343,9 +346,9 @@ def main(_):
   plt.plot(noise_schedule, sims_to_KLs[50], "-x", label="50 sims")
   plt.plot(noise_schedule, sims_to_KLs[100], "-o", label="100 sims")
   plt.plot(noise_schedule, sims_to_KLs[1000], "-^", label="1000 sims")
-  plt.title("Average KL divergence of policies, varying noise schedules")
+  plt.title("Average KL divergence of policies, varying noise levels")
   plt.ylabel("Average KL divergence")
-  plt.xlabel("Noise schedule")
+  plt.xlabel("Noise level")
   plt.grid()
   plt.legend()
   plt.savefig("avg_kl.png")
