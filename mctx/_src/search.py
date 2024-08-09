@@ -369,9 +369,27 @@ def backward(
 
     # Estimate the constant from the children's constants. Two methods here
     # again: 1) simple average, 2) Kolya's sqrt(N)-weighted average.
-    curr_QF_est_1 = jnp.sum(child_consts) / jnp.sum(child_visits)
-    curr_QF_est_2 = (jnp.sum(child_consts * sqrt_child_visits) /
-      jnp.sum(sqrt_child_visits))
+    child_sum = jnp.sum(child_visits)
+    child_root_sum = jnp.sum(sqrt_child_visits)
+    # If the child visitation sum is zero, set the constant to zero.
+    """ 
+    NOTE: If the sum is zero, this indicates that we have no information on the
+          constant anyways: we are either at a terminal node, indicating that
+          we have achieved the true, unbiased reward, or we are at a leaf node,
+          meaning that we don't have any flow estimates from lower in the tree
+          to actually construct the constant estimate. So, we have to trust the
+          flow estimate at this point.
+    """
+    curr_QF_est_1 = jnp.select(
+      condlist=[child_sum == 0.0],
+      choicelist=[0.0],
+      default=jnp.sum(child_consts) / child_sum,
+    )
+    curr_QF_est_2 = jnp.select(
+      condlist=[child_root_sum == 0.0],
+      choicelist=[0.0],
+      default=jnp.sum(child_consts * sqrt_child_visits) / child_root_sum,
+    )
     
     # Use the current tree.node_values as the flow estimates, and therefore,
     # as the current estimate of prior logits.
@@ -380,7 +398,7 @@ def backward(
     #       a very similar update structure to the MENTS paper. Also shows
     #       slight reduction in error compared to not doing it this way.
     prior_values = prior_values.at[parent, action].set(leaf_value)
-    pv_adjusted = prior_values[parent] - curr_QF_est_1 # Adjust the QF value.
+    pv_adjusted = prior_values[parent] - curr_QF_est_2 # Adjust the QF value.
     new_parent_value = -(
       leaf_value - pv_adjusted[action] +
       jsp.special.logsumexp((alpha + 1) * pv_adjusted) -
@@ -467,11 +485,10 @@ def update_tree_node(
   chex.assert_shape(prior_logits, (batch_size, tree.num_actions))
 
   # When using max_depth, a leaf can be expanded multiple times.
-  # TODO: might be problematic that the expanded node values are not averaged.
-  #   Actually, it shouldn't be, since these are just leaf nodes which do not
-  #   get any value if they are terminal. As such, the value they have is the
-  #   value estimate of the predictor, leaving this a noisy estimate anyways.
   new_visit = tree.node_visits[batch_range, node_index] + 1
+  # parent = tree.parents[batch_range, node_index]
+  # action = tree.action_from_parent[batch_range, parent]
+  # new_child_visit = tree.children_visits[batch_range, parent, action] + 1
   updates = dict(  # pylint: disable=use-dict-literal
       children_prior_logits=batch_update(
           tree.children_prior_logits, prior_logits, node_index),
@@ -481,6 +498,8 @@ def update_tree_node(
           tree.node_values, value, node_index),
       node_visits=batch_update(
           tree.node_visits, new_visit, node_index),
+      # children_visits=batch_update(
+      #     tree.children_visits, new_child_visit, parent, action),
       embeddings=jax.tree_util.tree_map(
           lambda t, s: batch_update(t, s, node_index),
           tree.embeddings, embedding))
@@ -529,4 +548,5 @@ def instantiate_tree_from_root(
   root_index = jnp.full([batch_size], Tree.ROOT_INDEX)
   tree = update_tree_node(
       tree, root_index, root.prior_logits, root.value, root.embedding)
+  # from mctx._src.search import instantiate_tree_from_root as inst_tree; root_out = mctx.RootFnOutput(prior_logits=jnp.array([[1, 2]]), value=jnp.array([10]), embedding=None); new_tree = inst_tree(root_out, 50, jnp.array([[0, 0]]), None);
   return tree
