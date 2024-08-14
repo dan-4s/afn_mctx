@@ -123,6 +123,9 @@ def qtransform_completed_by_mix_value(
 
   # Computing the mixed value and producing completed_qvalues.
   raw_value = tree.raw_values[node_index]
+  # TODO: investigate whether we can use children_values instead of the prior
+  # logits here. It would give more accurate flow and probability estimates.
+  # I don't think this line is too consequential, however...
   prior_probs = jax.nn.softmax(
       tree.children_prior_logits[node_index])
   if use_mixed_value:

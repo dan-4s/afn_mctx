@@ -380,12 +380,12 @@ def backward(
           to actually construct the constant estimate. So, we have to trust the
           flow estimate at this point.
     """
-    curr_QF_est_1 = jnp.select(
+    curr_const_est_1 = jnp.select(
       condlist=[child_sum == 0.0],
       choicelist=[0.0],
       default=jnp.sum(child_consts) / child_sum,
     )
-    curr_QF_est_2 = jnp.select(
+    curr_const_est_2 = jnp.select(
       condlist=[child_root_sum == 0.0],
       choicelist=[0.0],
       default=jnp.sum(child_consts * sqrt_child_visits) / child_root_sum,
@@ -398,7 +398,7 @@ def backward(
     #       a very similar update structure to the MENTS paper. Also shows
     #       slight reduction in error compared to not doing it this way.
     prior_values = prior_values.at[parent, action].set(leaf_value)
-    pv_adjusted = prior_values[parent] - curr_QF_est_2 # Adjust the QF value.
+    pv_adjusted = prior_values[parent] - curr_const_est_1 # Adjust the QF value.
     new_parent_value = -(
       leaf_value - pv_adjusted[action] +
       jsp.special.logsumexp((alpha + 1) * pv_adjusted) -
@@ -414,7 +414,7 @@ def backward(
     """
     NOTE: There are a ton of ways to estimate the constant on QF. The problem
           with a tree search scenario is that in the current function, we only
-          have access to the current node, not to the nodes that come after the
+          have access to the current node, not the nodes that come after the
           current node. As such, we are restricted to estimating the constant
           and propagating it up to the next level of the tree search.
     """

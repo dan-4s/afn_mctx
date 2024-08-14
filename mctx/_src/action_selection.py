@@ -130,6 +130,9 @@ def gumbel_muzero_root_action_selection(
   del rng_key
   chex.assert_shape([node_index], ())
   visit_counts = tree.children_visits[node_index]
+  # TODO: Change the prior logits to be the current value estimates when the 
+  # number of simulations is high enough... We can also try to set the
+  # children_values earlier so that they can be used instantly...
   prior_logits = tree.children_prior_logits[node_index]
   chex.assert_equal_shape([visit_counts, prior_logits])
   completed_qvalues = qtransform(tree, node_index)
@@ -181,6 +184,9 @@ def gumbel_muzero_interior_action_selection(
   del rng_key, depth
   chex.assert_shape([node_index], ())
   visit_counts = tree.children_visits[node_index]
+  # TODO: Again, change the prior logits so that they are from the updated flow
+  # estimates and not the QF estimates, which are out of date. We still need to
+  # use children_values here, which is problematic with a low simulation count.
   prior_logits = tree.children_prior_logits[node_index]
   chex.assert_equal_shape([visit_counts, prior_logits])
   completed_qvalues = qtransform(tree, node_index)
