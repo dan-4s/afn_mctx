@@ -16,7 +16,7 @@
 from absl.testing import absltest
 import jax
 import jax.numpy as jnp
-from mctx._src import qtransforms
+from afn_mctx._src import qtransforms
 import numpy as np
 
 

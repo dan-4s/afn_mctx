@@ -19,10 +19,10 @@ import chex
 import jax
 import jax.numpy as jnp
 
-from mctx._src import base
-from mctx._src import qtransforms
-from mctx._src import seq_halving
-from mctx._src import tree as tree_lib
+from afn_mctx._src import base
+from afn_mctx._src import qtransforms
+from afn_mctx._src import seq_halving
+from afn_mctx._src import tree as tree_lib
 
 
 def switching_action_selection_wrapper(

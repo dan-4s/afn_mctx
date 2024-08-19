@@ -18,8 +18,8 @@ import functools
 from absl.testing import absltest
 import jax
 import jax.numpy as jnp
-import mctx
-from mctx._src import policies
+import afn_mctx
+from afn_mctx._src import policies
 import numpy as np
 
 
@@ -29,7 +29,7 @@ def _make_bandit_recurrent_fn(rewards, dummy_embedding=()):
   def recurrent_fn(params, rng_key, action, embedding):
     del params, rng_key, embedding
     reward = rewards[jnp.arange(action.shape[0]), action]
-    return mctx.RecurrentFnOutput(
+    return afn_mctx.RecurrentFnOutput(
         reward=reward,
         discount=jnp.zeros_like(reward),
         prior_logits=jnp.zeros_like(rewards),
@@ -48,7 +48,7 @@ def _make_bandit_decision_and_chance_fns(rewards, num_chance_outcomes):
     dummy_chance_logits = jnp.full([batch_size, num_chance_outcomes],
                                    -jnp.inf).at[:, 0].set(1.0)
     afterstate_embedding = (action, embedding)
-    return mctx.DecisionRecurrentFnOutput(
+    return afn_mctx.DecisionRecurrentFnOutput(
         chance_logits=dummy_chance_logits,
         afterstate_value=jnp.zeros_like(reward)), afterstate_embedding
 
@@ -59,7 +59,7 @@ def _make_bandit_decision_and_chance_fns(rewards, num_chance_outcomes):
     batch_size = afterstate_action.shape[0]
 
     reward = rewards[jnp.arange(batch_size), afterstate_action]
-    return mctx.ChanceRecurrentFnOutput(
+    return afn_mctx.ChanceRecurrentFnOutput(
         action_logits=jnp.zeros_like(rewards),
         value=jnp.zeros_like(reward),
         discount=jnp.zeros_like(reward),
@@ -147,7 +147,7 @@ class PoliciesTest(absltest.TestCase):
         jax.nn.softmax(masked_logits))
 
   def test_muzero_policy(self):
-    root = mctx.RootFnOutput(
+    root = afn_mctx.RootFnOutput(
         prior_logits=jnp.array([
             [-1.0, 0.0, 2.0, 3.0],
         ]),
@@ -159,7 +159,7 @@ class PoliciesTest(absltest.TestCase):
         [0.0, 0.0, 0.0, 1.0],
     ])
 
-    policy_output = mctx.muzero_policy(
+    policy_output = afn_mctx.muzero_policy(
         params=(),
         rng_key=jax.random.PRNGKey(0),
         root=root,
@@ -177,7 +177,7 @@ class PoliciesTest(absltest.TestCase):
 
   def test_gumbel_muzero_policy(self):
     root_value = jnp.array([-5.0])
-    root = mctx.RootFnOutput(
+    root = afn_mctx.RootFnOutput(
         prior_logits=jnp.array([
             [0.0, -1.0, 2.0, 3.0],
         ]),
@@ -196,11 +196,11 @@ class PoliciesTest(absltest.TestCase):
     num_simulations = 17
     max_depth = 3
     qtransform = functools.partial(
-        mctx.qtransform_completed_by_mix_value,
+        afn_mctx.qtransform_completed_by_mix_value,
         value_scale=value_scale,
         maxvisit_init=maxvisit_init,
         rescale_values=True)
-    policy_output = mctx.gumbel_muzero_policy(
+    policy_output = afn_mctx.gumbel_muzero_policy(
         params=(),
         rng_key=jax.random.PRNGKey(0),
         root=root,
@@ -252,7 +252,7 @@ class PoliciesTest(absltest.TestCase):
 
   def test_gumbel_muzero_policy_without_invalid_actions(self):
     root_value = jnp.array([-5.0])
-    root = mctx.RootFnOutput(
+    root = afn_mctx.RootFnOutput(
         prior_logits=jnp.array([
             [0.0, -1.0, 2.0, 3.0],
         ]),
@@ -268,11 +268,11 @@ class PoliciesTest(absltest.TestCase):
     num_simulations = 17
     max_depth = 3
     qtransform = functools.partial(
-        mctx.qtransform_completed_by_mix_value,
+        afn_mctx.qtransform_completed_by_mix_value,
         value_scale=value_scale,
         maxvisit_init=maxvisit_init,
         rescale_values=True)
-    policy_output = mctx.gumbel_muzero_policy(
+    policy_output = afn_mctx.gumbel_muzero_policy(
         params=(),
         rng_key=jax.random.PRNGKey(0),
         root=root,
@@ -308,7 +308,7 @@ class PoliciesTest(absltest.TestCase):
 
   def test_stochastic_muzero_policy(self):
     """Tests that SMZ is equivalent to MZ with a dummy chance function."""
-    root = mctx.RootFnOutput(
+    root = afn_mctx.RootFnOutput(
         prior_logits=jnp.array([
             [-1.0, 0.0, 2.0, 3.0],
             [0.0, 2.0, 5.0, -4.0],
@@ -324,7 +324,7 @@ class PoliciesTest(absltest.TestCase):
 
     num_simulations = 10
 
-    policy_output = mctx.muzero_policy(
+    policy_output = afn_mctx.muzero_policy(
         params=(),
         rng_key=jax.random.PRNGKey(0),
         root=root,
@@ -340,7 +340,7 @@ class PoliciesTest(absltest.TestCase):
     decision_rec_fn, chance_rec_fn = _make_bandit_decision_and_chance_fns(
         rewards, num_chance_outcomes)
 
-    stochastic_policy_output = mctx.stochastic_muzero_policy(
+    stochastic_policy_output = afn_mctx.stochastic_muzero_policy(
         params=(),
         rng_key=jax.random.PRNGKey(0),
         root=root,

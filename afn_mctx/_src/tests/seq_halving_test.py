@@ -14,7 +14,7 @@
 # ==============================================================================
 """Tests for `seq_halving.py`."""
 from absl.testing import absltest
-from mctx._src import seq_halving
+from afn_mctx._src import seq_halving
 
 
 class SeqHalvingTest(absltest.TestCase):

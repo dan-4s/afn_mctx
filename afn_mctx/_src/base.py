@@ -18,7 +18,7 @@ from typing import Any, Callable, Generic, TypeVar, Tuple
 
 import chex
 
-from mctx._src import tree
+from afn_mctx._src import tree
 
 
 # Parameters are arbitrary nested structures of `chex.Array`.

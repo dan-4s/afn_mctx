@@ -21,9 +21,9 @@ import jax
 import jax.numpy as jnp
 import jax.scipy as jsp
 
-from mctx._src import action_selection
-from mctx._src import base
-from mctx._src import tree as tree_lib
+from afn_mctx._src import action_selection
+from afn_mctx._src import base
+from afn_mctx._src import tree as tree_lib
 
 Tree = tree_lib.Tree
 T = TypeVar("T")

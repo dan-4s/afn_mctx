@@ -13,7 +13,7 @@ from jax import Array
 from jax.scipy.special import logsumexp
 import jax.numpy as jnp
 import matplotlib.pyplot as plt
-import mctx
+import afn_mctx
 from examples.binary_env import Game, GameState
 
 FLAGS = flags.FLAGS
@@ -68,7 +68,7 @@ def _run_gumbel_alphazero_demo(
   root_value = jnp.sum(jax.nn.softmax(prior_logits) * qvalues, axis=-1)
 
   # The root output is used in the search tree.
-  root = mctx.RootFnOutput(
+  root = afn_mctx.RootFnOutput(
       prior_logits=prior_logits,
       value=root_value,
       # The embedding is any environment state information.
@@ -80,7 +80,7 @@ def _run_gumbel_alphazero_demo(
   recurrent_fn = _make_alphazero_recurrent_fn(game_obj, num_actions)
 
   # Running the search.
-  policy_output = mctx.gumbel_muzero_policy(
+  policy_output = afn_mctx.gumbel_muzero_policy(
       params=(),
       rng_key=search_rng,
       root=root,
@@ -89,7 +89,7 @@ def _run_gumbel_alphazero_demo(
       max_num_considered_actions=max_num_considered_actions,
       max_depth=2,
       qtransform=functools.partial(
-          mctx.qtransform_completed_by_mix_value,
+          afn_mctx.qtransform_completed_by_mix_value,
           use_mixed_value=False),
   )
 
@@ -126,7 +126,7 @@ def _make_alphazero_recurrent_fn(game_obj: Game, num_actions: int):
     # discount is -1.
     discount = -1.0 * jnp.ones_like(reward)
     discount = jnp.where(terminated, 0.0, discount)
-    recurrent_fn_output = mctx.RecurrentFnOutput(
+    recurrent_fn_output = afn_mctx.RecurrentFnOutput(
         reward=reward,
         discount=discount,
         prior_logits=predicted_logits,
@@ -178,7 +178,7 @@ def _run_aflownet_demo(
                    logsumexp(alpha*log_flows, axis=1))
 
   # The root output is used in the search tree.
-  root = mctx.RootFnOutput(
+  root = afn_mctx.RootFnOutput(
       prior_logits=prior_logits,
       value=log_root_flow,
       # The embedding is any environment state information.
@@ -190,7 +190,7 @@ def _run_aflownet_demo(
   recurrent_fn = _make_afn_recurrent_fn(game_obj, num_actions, priors_method, noise_level)
 
   # Running the search.
-  policy_output = mctx.gumbel_aflownet_policy(
+  policy_output = afn_mctx.gumbel_aflownet_policy(
       params=(),
       rng_key=search_rng,
       root=root,
@@ -199,7 +199,7 @@ def _run_aflownet_demo(
       max_num_considered_actions=max_num_considered_actions,
       max_depth=2,
       qtransform=functools.partial(
-          mctx.qtransform_completed_by_mix_value,
+          afn_mctx.qtransform_completed_by_mix_value,
           use_mixed_value=False),
       backward_method=backward_method, # AFN or AFN_CONST -> AFN doesn't predict the QF constant.
   )
@@ -273,7 +273,7 @@ def _make_afn_recurrent_fn(game_obj: Game, num_actions: int, priors_method: str,
     # discount is -1.
     discount = -1.0 * jnp.ones_like(reward)
     discount = jnp.where(terminated, 0.0, discount)
-    recurrent_fn_output = mctx.RecurrentFnOutput(
+    recurrent_fn_output = afn_mctx.RecurrentFnOutput(
         reward=reward, # Provide reward, but don't use it since it is already included in the flow.
         discount=discount,
         prior_logits=predicted_QF,
@@ -302,8 +302,8 @@ def main(_):
   jitted_run_demo = jax.jit(_run_aflownet_demo, static_argnums=[1,2,4])
   num_sims = [1, 2, 3, 4, 8, 50, 100, 1000]
   # num_sims = [1000] # TODO: TESTING!!
-  noise_schedule = [0.0]
-  # noise_schedule = jnp.arange(start=0, stop=2.1, step=0.2)
+  # noise_schedule = [0.0] # TODO: TESTING!!
+  noise_schedule = jnp.arange(start=0, stop=2.1, step=0.2)
   gt_flows = jnp.array([1.0, 11/101, 110/101])
   gt_log_flows = jnp.log(gt_flows)
   sims_to_errors = {}
@@ -313,7 +313,7 @@ def main(_):
     all_KLs = []
     for i in range(len(noise_schedule)):
       #We'll reuse the same rng_key for all experiments.
-      _, policy_output = jitted_run_demo(rng_key, sims, "random", noise_schedule[i], "AFN_CONST")
+      _, policy_output = jitted_run_demo(rng_key, sims, "mixed", noise_schedule[i], "AFN_CONST")
 
       # Compute the error on the estimated flows.
       tree = policy_output.search_tree
@@ -331,7 +331,7 @@ def main(_):
       avg_policy_div = jnp.average(policy_div)
       all_KLs.append(avg_policy_div)
 
-      breakpoint()
+      # breakpoint()
     sims_to_errors[sims] = all_errors
     sims_to_KLs[sims] = all_KLs
   
