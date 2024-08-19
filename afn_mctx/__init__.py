@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 # ==============================================================================
-"""Mctx: Monte Carlo tree search in JAX."""
+"""AFN MCTX: Monte Carlo tree search for AFlowNets in JAX."""
 
 from afn_mctx._src.action_selection import gumbel_muzero_interior_action_selection
 from afn_mctx._src.action_selection import gumbel_muzero_root_action_selection
