@@ -300,7 +300,7 @@ def main(_):
   print("\n============================")
   print("\tAFN demos")
   jitted_run_demo = jax.jit(_run_aflownet_demo, static_argnums=[1,2,4])
-  num_sims = [1, 2, 3, 4, 8, 50, 100, 1000]
+  num_sims = [8, 50, 100, 1000]
   # num_sims = [1000] # TODO: TESTING!!
   # noise_schedule = [0.0] # TODO: TESTING!!
   noise_schedule = jnp.arange(start=0, stop=2.1, step=0.2)
@@ -331,7 +331,7 @@ def main(_):
       avg_policy_div = jnp.average(policy_div)
       all_KLs.append(avg_policy_div)
 
-      # breakpoint()
+      breakpoint()
     sims_to_errors[sims] = all_errors
     sims_to_KLs[sims] = all_KLs
   
