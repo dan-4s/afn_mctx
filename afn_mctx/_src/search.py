@@ -282,7 +282,7 @@ def backward(
     leaf_value = reward + tree.children_discounts[parent, action] * leaf_value
     parent_value = (
         tree.node_values[parent] * count + leaf_value) / (count + 1.0)
-    children_values = tree.node_values[index]
+    children_values = tree.node_values[index] # TODO: EDIT ACTION SELECTION WITH NEGATED CHILDREN_VALUES!!!!
     children_counts = tree.children_visits[parent, action] + 1
 
     tree = tree.replace(
@@ -310,19 +310,25 @@ def backward(
     parent = tree.parents[index]
     count = tree.node_visits[parent]
     action = tree.action_from_parent[index]
+    reward = tree.children_rewards[parent, action]
+    # Assume negated reward (i.e., from parent's perspective). Then, we have to
+    # negate the new leaf value to put it into the parent's perspective.
+    # -(-R) - (-(-leaf_value)) = (R) + (-tree.node_value[index])
+    leaf_value = -reward - tree.children_discounts[parent, action] * leaf_value
+    # Leaf value must be from opponent's perspective, then converted!
+    # leaf_value = -leaf_value
 
-    # Use the current tree.node_values as the flow estimates, and therefore,
-    # as the current estimate of prior logits.
-    # prior_logits = tree.children_prior_logits
-    prior_values = tree.children_values
+    # Use the children_values as the flow estimate. Negate them so that they
+    # are from the parent's perspective.
+    prior_values = tree.children_values[parent]
     # TODO: TESTING Setting prior_logits[parent, action] = leaf_value. This has
     #       a very similar update structure to the MENTS paper. Also shows
     #       slight reduction in error compared to not doing it this way.
-    prior_values = prior_values.at[parent, action].set(leaf_value)
-    new_parent_value = -(
-      leaf_value - prior_values[parent, action] +
-      jsp.special.logsumexp((alpha + 1) * prior_values[parent]) -
-      jsp.special.logsumexp(alpha * prior_values[parent])
+    prior_values = prior_values.at[action].set(leaf_value)
+    new_parent_value = (
+      leaf_value - prior_values[action] +
+      jsp.special.logsumexp(-(alpha + 1) * prior_values) -
+      jsp.special.logsumexp(-alpha * prior_values)
     )
     # new_parent_value = -(
     #   log_flow[action] - prior_logits[parent, action] +
@@ -334,7 +340,8 @@ def backward(
     parent_value = (
         tree.node_values[parent] * count + new_parent_value) / (count + 1.0)
     leaf_value = parent_value
-    children_values = tree.node_values[index]
+    # TODO: safety proof against post-terminal updates!!!
+    children_values = tree.node_values[index] # TODO: RENAME THIS VARIABLE. CONFUSING!
     children_prior_logits = tree.node_values[index]
     children_counts = tree.children_visits[parent, action] + 1
 
@@ -366,6 +373,8 @@ def backward(
     child_consts = tree.children_QF_const[index]
     child_visits = tree.children_visits[index]
     sqrt_child_visits = jnp.sqrt(child_visits)
+    # reward = tree.children_rewards[parent, action]
+    # leaf_value = reward + tree.children_discounts[parent, action] * leaf_value
 
     # Estimate the constant from the children's constants. Two methods here
     # again: 1) simple average, 2) Kolya's sqrt(N)-weighted average.

@@ -20,7 +20,7 @@ FLAGS = flags.FLAGS
 flags.DEFINE_integer("seed", 42, "Random seed.")
 flags.DEFINE_integer("batch_size", 4, "Batch size.")
 flags.DEFINE_integer("num_actions", 2, "Number of actions.")
-flags.DEFINE_integer("num_simulations", 4, "Number of simulations.")
+flags.DEFINE_integer("num_simulations", 16, "Number of simulations.")
 flags.DEFINE_integer("max_num_considered_actions", 2,
                      "The maximum number of actions expanded at the root.")
 flags.DEFINE_integer("num_runs", 1, "Number of runs on random data.")
@@ -169,7 +169,7 @@ def _run_aflownet_demo(
   if(priors_method == "random"):
     log_flows = jax.random.normal(logits_rng, shape=[batch_size, 2])
   else:
-    log_flows = jnp.log(jnp.array([[0.1089, 1.089]] * batch_size))
+    log_flows = jnp.log(jnp.array([[101/11, 101/110]] * batch_size))
   prior_logits = log_flows # These can be log flows, a softmax, or log softmax.
 
   # Use the prior policy and q-value estimates to generate the value estimate
@@ -231,7 +231,7 @@ def _make_afn_recurrent_fn(game_obj: Game, num_actions: int, priors_method: str,
       def generate_QF(board_states: chex.Array):
         return jnp.select(
           condlist=[board_states == 0, board_states == 1, board_states == 2],
-          choicelist=[jnp.array([0.1089, 1.089]), jnp.array([10, 1]), jnp.array([1, 0.1])],
+          choicelist=[jnp.array([101/11, 101/110]), jnp.array([0.1, 1]), jnp.array([1, 10])],
           default=0.5,
         ) 
       predicted_QF_gt = jax.vmap(generate_QF)(states.board)
@@ -241,7 +241,7 @@ def _make_afn_recurrent_fn(game_obj: Game, num_actions: int, priors_method: str,
       def generate_parent_flow(board_states: chex.Array):
         return jnp.select(
           condlist=[board_states == 0, board_states == 1, board_states == 2],
-          choicelist=[1, 0.1089, 1.089],
+          choicelist=[1, 101/11, 101/110],
           default=1.0,
         )
       predicted_flow_gt = jax.vmap(generate_parent_flow)(states.board)
@@ -265,7 +265,8 @@ def _make_afn_recurrent_fn(game_obj: Game, num_actions: int, priors_method: str,
       predicted_flow = predicted_flow_r
       predicted_QF = predicted_QF_r
     
-    predicted_flow = jnp.where(terminated, reward, predicted_flow)
+    # predicted_flow = jnp.where(terminated, reward, predicted_flow)
+    predicted_flow = jnp.where(terminated, 0.0, predicted_flow)
 
     # Since this is AlphaZero-like in a two-player environment, we want to
     # apply a negation to the reward as a discount. If we're at a terminal
@@ -274,7 +275,7 @@ def _make_afn_recurrent_fn(game_obj: Game, num_actions: int, priors_method: str,
     discount = -1.0 * jnp.ones_like(reward)
     discount = jnp.where(terminated, 0.0, discount)
     recurrent_fn_output = afn_mctx.RecurrentFnOutput(
-        reward=reward, # Provide reward, but don't use it since it is already included in the flow.
+        reward=reward, # Provide reward, and actually use it this time around!!!!
         discount=discount,
         prior_logits=predicted_QF,
         value=predicted_flow,
@@ -300,11 +301,11 @@ def main(_):
   print("\n============================")
   print("\tAFN demos")
   jitted_run_demo = jax.jit(_run_aflownet_demo, static_argnums=[1,2,4])
-  num_sims = [8, 50, 100, 1000]
+  num_sims = [50, 100, 1000]
   # num_sims = [1000] # TODO: TESTING!!
-  # noise_schedule = [0.0] # TODO: TESTING!!
+  # noise_schedule = [2.0] # TODO: TESTING!!
   noise_schedule = jnp.arange(start=0, stop=2.1, step=0.2)
-  gt_flows = jnp.array([1.0, 11/101, 110/101])
+  gt_flows = jnp.array([1.0, 101/11, 101/110])
   gt_log_flows = jnp.log(gt_flows)
   sims_to_errors = {}
   sims_to_KLs = {}
@@ -313,13 +314,15 @@ def main(_):
     all_KLs = []
     for i in range(len(noise_schedule)):
       #We'll reuse the same rng_key for all experiments.
-      _, policy_output = jitted_run_demo(rng_key, sims, "mixed", noise_schedule[i], "AFN_CONST")
+      _, policy_output = jitted_run_demo(rng_key, sims, "mixed", noise_schedule[i], "AFN")
 
       # Compute the error on the estimated flows.
       tree = policy_output.search_tree
       root_error = jnp.exp(tree.node_values[:,0]) - gt_flows[0]
       root_error = jnp.reshape(root_error, shape=(FLAGS.batch_size,1))
+      root_error = jnp.abs(root_error)
       child_error = jnp.exp(tree.children_values[:, 0]) - gt_flows[1:]
+      child_error = jnp.abs(child_error)
       total_error = jnp.concat((root_error, child_error), axis=1)
       average_error = jnp.average(total_error).item()
       all_errors.append(average_error)
@@ -331,6 +334,10 @@ def main(_):
       avg_policy_div = jnp.average(policy_div)
       all_KLs.append(avg_policy_div)
 
+      print(jnp.exp(tree.children_values[0, 0:7]))
+      print(jnp.exp(tree.node_values[0, 0:7]))
+      print(tree.parents[0, 0:7])
+      print(tree.action_from_parent[0, 0:7])
       breakpoint()
     sims_to_errors[sims] = all_errors
     sims_to_KLs[sims] = all_KLs
