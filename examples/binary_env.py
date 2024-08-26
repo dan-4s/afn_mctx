@@ -34,6 +34,7 @@ class Game:
   """
   alphazero_rewards: Array = jnp.array([-1, 0, 0, 1])
   afn_rewards: Array = jnp.array([0.1, 1, 1, 10])
+  # afn_rewards: Array = jnp.array([1, 1, 0.3678, 0.3678]) # These are for a TTT simulation.
 
   def init(self) -> GameState:
     return GameState()
