@@ -310,6 +310,8 @@ def backward(
     parent = tree.parents[index]
     count = tree.node_visits[parent]
     action = tree.action_from_parent[index]
+    reward = tree.children_rewards[parent, action]
+    leaf_value = reward + tree.children_discounts[parent, action] * leaf_value
 
     # Use the current tree.node_values as the flow estimates, and therefore,
     # as the current estimate of prior logits.
@@ -363,6 +365,8 @@ def backward(
     parent = tree.parents[index]
     count = tree.node_visits[parent]
     action = tree.action_from_parent[index]
+    reward = tree.children_rewards[parent, action]
+    leaf_value = reward + tree.children_discounts[parent, action] * leaf_value
     child_consts = tree.children_QF_const[index]
     child_visits = tree.children_visits[index]
     sqrt_child_visits = jnp.sqrt(child_visits)

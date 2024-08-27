@@ -169,7 +169,7 @@ def _run_aflownet_demo(
   if(priors_method == "random"):
     log_flows = jax.random.normal(logits_rng, shape=[batch_size, 2])
   else:
-    log_flows = jnp.log(jnp.array([[0.1089, 1.089]] * batch_size))
+    log_flows = jnp.log(jnp.array([[11/101, 110/101]] * batch_size))
   prior_logits = log_flows # These can be log flows, a softmax, or log softmax.
 
   # Use the prior policy and q-value estimates to generate the value estimate
@@ -231,7 +231,7 @@ def _make_afn_recurrent_fn(game_obj: Game, num_actions: int, priors_method: str,
       def generate_QF(board_states: chex.Array):
         return jnp.select(
           condlist=[board_states == 0, board_states == 1, board_states == 2],
-          choicelist=[jnp.array([0.1089, 1.089]), jnp.array([10, 1]), jnp.array([1, 0.1])],
+          choicelist=[jnp.array([11/101, 110/101]), jnp.array([10, 1]), jnp.array([1, 0.1])],
           default=0.5,
         ) 
       predicted_QF_gt = jax.vmap(generate_QF)(states.board)
@@ -241,7 +241,7 @@ def _make_afn_recurrent_fn(game_obj: Game, num_actions: int, priors_method: str,
       def generate_parent_flow(board_states: chex.Array):
         return jnp.select(
           condlist=[board_states == 0, board_states == 1, board_states == 2],
-          choicelist=[1, 0.1089, 1.089],
+          choicelist=[1, 11/101, 110/101],
           default=1.0,
         )
       predicted_flow_gt = jax.vmap(generate_parent_flow)(states.board)
@@ -265,13 +265,13 @@ def _make_afn_recurrent_fn(game_obj: Game, num_actions: int, priors_method: str,
       predicted_flow = predicted_flow_r
       predicted_QF = predicted_QF_r
     
-    predicted_flow = jnp.where(terminated, reward, predicted_flow)
+    predicted_flow = jnp.where(terminated, 0.0, predicted_flow)
 
-    # Since this is AlphaZero-like in a two-player environment, we want to
-    # apply a negation to the reward as a discount. If we're at a terminal
-    # state, then the discount is zero. If we're at a non-terminal state, the
-    # discount is -1.
-    discount = -1.0 * jnp.ones_like(reward)
+    # The discount for AFNs does not need to negate leaf values or rewards as
+    # these must already be negated when passed as recurrent outputs. This
+    # helps maintain consistent q-value predictions in the action selection
+    # phase of the tree search.
+    discount = jnp.ones_like(reward)
     discount = jnp.where(terminated, 0.0, discount)
     recurrent_fn_output = afn_mctx.RecurrentFnOutput(
         reward=reward, # Provide reward, but don't use it since it is already included in the flow.
@@ -313,7 +313,7 @@ def main(_):
     all_KLs = []
     for i in range(len(noise_schedule)):
       #We'll reuse the same rng_key for all experiments.
-      _, policy_output = jitted_run_demo(rng_key, sims, "mixed", noise_schedule[i], "AFN_CONST")
+      _, policy_output = jitted_run_demo(rng_key, sims, "mixed", noise_schedule[i], "AFN")
 
       # Compute the error on the estimated flows.
       tree = policy_output.search_tree
@@ -331,7 +331,7 @@ def main(_):
       avg_policy_div = jnp.average(policy_div)
       all_KLs.append(avg_policy_div)
 
-      breakpoint()
+      # breakpoint()
     sims_to_errors[sims] = all_errors
     sims_to_KLs[sims] = all_KLs
   
