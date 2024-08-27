@@ -38,7 +38,7 @@ from afn_mctx._src.qtransforms import qtransform_completed_by_mix_value
 from afn_mctx._src.search import search
 from afn_mctx._src.tree import Tree
 
-__version__ = "0.0.1"
+__version__ = "0.0.2"
 
 __all__ = (
     "ChanceRecurrentFnOutput",
