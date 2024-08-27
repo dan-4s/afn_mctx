@@ -197,7 +197,7 @@ def _run_aflownet_demo(
       recurrent_fn=recurrent_fn,
       num_simulations=num_simulations,
       max_num_considered_actions=max_num_considered_actions,
-      max_depth=2,
+      max_depth=3,
       qtransform=functools.partial(
           afn_mctx.qtransform_completed_by_mix_value,
           use_mixed_value=False),
@@ -300,7 +300,7 @@ def main(_):
   print("\n============================")
   print("\tAFN demos")
   jitted_run_demo = jax.jit(_run_aflownet_demo, static_argnums=[1,2,4])
-  num_sims = [8, 50, 100, 1000]
+  num_sims = [50, 100, 1000]
   # num_sims = [1000] # TODO: TESTING!!
   # noise_schedule = [0.0] # TODO: TESTING!!
   noise_schedule = jnp.arange(start=0, stop=2.1, step=0.2)
@@ -313,13 +313,13 @@ def main(_):
     all_KLs = []
     for i in range(len(noise_schedule)):
       #We'll reuse the same rng_key for all experiments.
-      _, policy_output = jitted_run_demo(rng_key, sims, "mixed", noise_schedule[i], "AFN")
+      _, policy_output = jitted_run_demo(rng_key, sims, "mixed", noise_schedule[i], "AFN_CONST")
 
       # Compute the error on the estimated flows.
       tree = policy_output.search_tree
-      root_error = jnp.exp(tree.node_values[:,0]) - gt_flows[0]
+      root_error = jnp.abs(jnp.exp(tree.node_values[:,0]) - gt_flows[0])
       root_error = jnp.reshape(root_error, shape=(FLAGS.batch_size,1))
-      child_error = jnp.exp(tree.children_values[:, 0]) - gt_flows[1:]
+      child_error = jnp.abs(jnp.exp(tree.children_values[:, 0]) - gt_flows[1:])
       total_error = jnp.concat((root_error, child_error), axis=1)
       average_error = jnp.average(total_error).item()
       all_errors.append(average_error)
@@ -331,10 +331,10 @@ def main(_):
       avg_policy_div = jnp.average(policy_div)
       all_KLs.append(avg_policy_div)
 
-      # print(jnp.exp(tree.children_values[0, 0:7]))
-      # print(jnp.exp(tree.node_values[0, 0:7]))
-      # print(tree.parents[0, 0:7])
-      # print(tree.action_from_parent[0, 0:7])
+      # print(jnp.exp(tree.children_values[0, 0:9]))
+      # print(jnp.exp(tree.node_values[0, 0:9]))
+      # print(tree.parents[0, 0:9])
+      # print(tree.action_from_parent[0, 0:9])
       # breakpoint()
     sims_to_errors[sims] = all_errors
     sims_to_KLs[sims] = all_KLs

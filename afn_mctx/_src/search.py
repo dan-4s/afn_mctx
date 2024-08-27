@@ -166,8 +166,6 @@ def simulate(
     depth = state.depth + 1
     is_before_depth_cutoff = depth < max_depth
     is_visited = next_node_index != Tree.UNVISITED
-    # TODO: is_continuing could easily be appended with another condition:
-    #   is_finished, to prevent further spurious searching of the tree.
     is_continuing = jnp.logical_and(is_visited, is_before_depth_cutoff)
     return _SimulationState(  # pytype: disable=wrong-arg-types  # jax-types
         rng_key=rng_key,
@@ -297,13 +295,13 @@ def backward(
   
   def afn_body_fun(loop_state):
     """
-    NOTE: `leaf_value` is here used to represent the flow of the prior node in
-          the search tree. We can also extract this information from
-          `tree.node_values[index]`. We keep the notion of a `leaf_value` here
-          in order to maintain backwards compatiblity with MCTX. Leaf values
-          are used to represent flow estimates from lower in the tree, in
-          distinction from `children_values`, which are only updated after we
-          have passed the relevant child node.
+    Compute recursive updates using the generalised TB update (also known as
+    the mellowmax operator).
+
+    NOTE: `leaf_value` is here used to represent the flow of the prior node in\
+          the search tree. The leaf value is expected to be from the\
+          perspective of the parent. Thus, for each node, we must invert its\
+          flow prediction to put it in the perspective of the opponent.
     """
     # Here we update the value of our parent, so we start by reversing.
     tree, leaf_value, index = loop_state
@@ -313,40 +311,40 @@ def backward(
     reward = tree.children_rewards[parent, action]
     leaf_value = reward + tree.children_discounts[parent, action] * leaf_value
 
-    # Use the current tree.node_values as the flow estimates, and therefore,
-    # as the current estimate of prior logits.
-    # prior_logits = tree.children_prior_logits
+    # Use the current tree.children_values as the flow estimates, and
+    # therefore, as the current estimate of the QF values.
     prior_values = tree.children_values
-    # TODO: TESTING Setting prior_logits[parent, action] = leaf_value. This has
-    #       a very similar update structure to the MENTS paper. Also shows
-    #       slight reduction in error compared to not doing it this way.
+
+    # TODO TESTING: Setting prior_logits[parent, action] = leaf_value.
     prior_values = prior_values.at[parent, action].set(leaf_value)
     new_parent_value = -(
       leaf_value - prior_values[parent, action] +
       jsp.special.logsumexp((alpha + 1) * prior_values[parent]) -
       jsp.special.logsumexp(alpha * prior_values[parent])
     )
-    # new_parent_value = -(
-    #   log_flow[action] - prior_logits[parent, action] +
-    #   jsp.special.logsumexp((alpha + 1) * prior_logits[parent]) -
-    #   jsp.special.logsumexp(alpha * prior_logits[parent])
-    # )
+
     # Take the average parent value with this update since we don't want a
     # single bad estimate to throw off the entire estimate.
     parent_value = (
         tree.node_values[parent] * count + new_parent_value) / (count + 1.0)
-    leaf_value = parent_value
-    children_values = tree.node_values[index]
-    children_prior_logits = tree.node_values[index]
+    
+    # Set up the updates for the various tracked values. NOTE: we must ensure
+    # that node_values and children_values are zeroed out for terminal and
+    # post-terminal states!!! The value of a terminal state must come only from
+    # the reward obtained at that state!
+    discount = tree.children_discounts[parent, action]
+    leaf_value = parent_value # Can't do anything here, discount is 1...
+    new_child_value = discount * tree.node_values[index]
+    new_child_prior_logits = discount * tree.node_values[index]
     children_counts = tree.children_visits[parent, action] + 1
 
     tree = tree.replace(
         node_values=update(tree.node_values, parent_value, parent),
         node_visits=update(tree.node_visits, count + 1, parent),
         children_prior_logits=update(tree.children_prior_logits,
-            children_prior_logits, parent, action),
+            new_child_prior_logits, parent, action),
         children_values=update(
-            tree.children_values, children_values, parent, action),
+            tree.children_values, new_child_value, parent, action),
         children_visits=update(
             tree.children_visits, children_counts, parent, action))
 
@@ -354,11 +352,15 @@ def backward(
   
   def afn_const_body_fun(loop_state):
     """
-    NOTE: This is almost the exact same as the afn_body_fun, but instead of
-          trusting the QF values since they are likely trained via a KL
-          divergence on a softmax-based policy, we need to predict the constant
-          of the softmax. As such, this backward function also predicts the
-          constant and uses it to correct the flow prediction.
+    Compute recursive updates using the generalised TB update (also known as
+    the mellowmax operator). This code also predicts a constant from the
+    softmax function.
+
+    NOTE: This is almost the exact same as the afn_body_fun, but instead of\
+          trusting the QF values since they are likely trained via a KL\
+          divergence on a softmax-based policy, we need to predict the\
+          constant of the softmax. As such, this backward function also\
+          predicts the constant and uses it to correct the flow prediction.
     """
     # Here we update the value of our parent, so we start by reversing.
     tree, leaf_value, index = loop_state
@@ -395,8 +397,8 @@ def backward(
       default=jnp.sum(child_consts * sqrt_child_visits) / child_root_sum,
     )
     
-    # Use the current tree.node_values as the flow estimates, and therefore,
-    # as the current estimate of prior logits.
+    # Use the current tree.children_values as the flow estimates, and
+    # therefore, as the current estimate of the QF values.
     prior_values = tree.children_values
     # TODO: TESTING Setting prior_logits[parent, action] = leaf_value. This has
     #       a very similar update structure to the MENTS paper. Also shows
@@ -427,17 +429,25 @@ def backward(
     parent_QF_const = (tree.children_QF_const[parent, action] * c_count +
                        QF_const_est) / (c_count + 1)
 
-    leaf_value = parent_value
-    children_values = tree.node_values[index]
+    # Set up the updates for the various tracked values. NOTE: we must ensure
+    # that node_values and children_values are zeroed out for terminal and
+    # post-terminal states!!! The value of a terminal state must come only from
+    # the reward obtained at that state!
+    discount = tree.children_discounts[parent, action]
+    leaf_value = parent_value # Can't do anything here, discount is 1...
+    new_child_value = discount * tree.node_values[index]
+    new_child_prior_logits = discount * tree.node_values[index]
     children_counts = tree.children_visits[parent, action] + 1
 
     tree = tree.replace(
         node_values=update(tree.node_values, parent_value, parent),
         node_visits=update(tree.node_visits, count + 1, parent),
+        children_prior_logits=update(tree.children_prior_logits,
+            new_child_prior_logits, parent, action),
         children_QF_const=update(tree.children_QF_const, parent_QF_const,
             parent, action),
         children_values=update(
-            tree.children_values, children_values, parent, action),
+            tree.children_values, new_child_value, parent, action),
         children_visits=update(
             tree.children_visits, children_counts, parent, action))
 
