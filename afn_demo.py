@@ -331,6 +331,10 @@ def main(_):
       avg_policy_div = jnp.average(policy_div)
       all_KLs.append(avg_policy_div)
 
+      # print(jnp.exp(tree.children_values[0, 0:7]))
+      # print(jnp.exp(tree.node_values[0, 0:7]))
+      # print(tree.parents[0, 0:7])
+      # print(tree.action_from_parent[0, 0:7])
       # breakpoint()
     sims_to_errors[sims] = all_errors
     sims_to_KLs[sims] = all_KLs
