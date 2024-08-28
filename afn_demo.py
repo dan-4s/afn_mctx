@@ -198,6 +198,7 @@ def _run_aflownet_demo(
       num_simulations=num_simulations,
       max_num_considered_actions=max_num_considered_actions,
       max_depth=3,
+      invalid_actions=jnp.array([[True, False]]*4),
       qtransform=functools.partial(
           afn_mctx.qtransform_completed_by_mix_value,
           use_mixed_value=False),
@@ -221,6 +222,7 @@ def _make_afn_recurrent_fn(game_obj: Game, num_actions: int, priors_method: str,
     log_reward = jnp.log(reward)
     reward = jnp.where(reward == 0, 0.0, log_reward)
     terminated = states.game_over
+    batch_size = reward.shape[0]
 
     # NOTE: Invert rewards to achieve correct operation! This is because the
     #       rewards are technically from the previous player's point of view!
@@ -245,11 +247,10 @@ def _make_afn_recurrent_fn(game_obj: Game, num_actions: int, priors_method: str,
           default=1.0,
         )
       predicted_flow_gt = jax.vmap(generate_parent_flow)(states.board)
-      predicted_flow_gt = jnp.log(predicted_flow_gt)
+      predicted_flow_gt = -jnp.log(predicted_flow_gt)
     
     if(priors_method == "random" or priors_method == "mixed"):
       # Predict logits and values using RNG.
-      batch_size = reward.shape[0]
       rng_key, QF_rng_key = jax.random.split(rng_key, 2)
       rng_key, flow_rng_key = jax.random.split(rng_key, 2)
       predicted_QF_r = jax.random.normal(QF_rng_key, shape=(batch_size, num_actions))
@@ -273,11 +274,22 @@ def _make_afn_recurrent_fn(game_obj: Game, num_actions: int, priors_method: str,
     # phase of the tree search.
     discount = jnp.ones_like(reward)
     discount = jnp.where(terminated, 0.0, discount)
+
+    # Legal action mask generation.
+    # legal_action_mask = jnp.ones(shape=(batch_size, num_actions), dtype=jnp.bool)
+    def generate_LAM(board_states: chex.Array):
+      return jnp.select(
+        condlist=[board_states == 1, board_states == 2],
+        choicelist=[jnp.array([True, False]), jnp.array([False, True])],
+        default=jnp.array([True, True]),
+      ) 
+    legal_action_mask = jax.vmap(generate_LAM)(states.board)
     recurrent_fn_output = afn_mctx.RecurrentFnOutput(
         reward=reward, # Provide reward, but don't use it since it is already included in the flow.
         discount=discount,
         prior_logits=predicted_QF,
         value=predicted_flow,
+        legal_action_mask=legal_action_mask,
     )
     return recurrent_fn_output, states
 
@@ -313,7 +325,7 @@ def main(_):
     all_KLs = []
     for i in range(len(noise_schedule)):
       #We'll reuse the same rng_key for all experiments.
-      _, policy_output = jitted_run_demo(rng_key, sims, "mixed", noise_schedule[i], "AFN_CONST")
+      _, policy_output = jitted_run_demo(rng_key, sims, "mixed", noise_schedule[i], "AFN")
 
       # Compute the error on the estimated flows.
       tree = policy_output.search_tree
@@ -331,11 +343,12 @@ def main(_):
       avg_policy_div = jnp.average(policy_div)
       all_KLs.append(avg_policy_div)
 
-      # print(jnp.exp(tree.children_values[0, 0:9]))
-      # print(jnp.exp(tree.node_values[0, 0:9]))
-      # print(tree.parents[0, 0:9])
-      # print(tree.action_from_parent[0, 0:9])
-      # breakpoint()
+      print(jnp.exp(tree.children_values[0, 0:9]))
+      print(jnp.exp(tree.node_values[0, 0:9]))
+      print(tree.parents[0, 0:9])
+      print(tree.action_from_parent[0, 0:9])
+      print(f"ROOT POLICY: {jax.nn.softmax(tree.children_values[0, 0])}")
+      breakpoint()
     sims_to_errors[sims] = all_errors
     sims_to_KLs[sims] = all_KLs
   

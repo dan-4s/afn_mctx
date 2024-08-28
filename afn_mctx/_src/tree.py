@@ -56,6 +56,7 @@ class Tree(Generic[T]):
   embeddings: `[B, N, ...]` the state embeddings of each node.
   root_invalid_actions: `[B, num_actions]` a mask with invalid actions at the
     root. In the mask, invalid actions have ones, and valid actions have zeros.
+  legal_action_mask: `[B, N, num_actions]` the legal actions at a state.
   extra_data: `[B, ...]` extra data passed to the search.
   """
   node_visits: chex.Array  # [B, N]
@@ -72,6 +73,7 @@ class Tree(Generic[T]):
   children_QF_const: chex.Array  # [B, N, num_actions]
   embeddings: Any  # [B, N, ...]
   root_invalid_actions: chex.Array  # [B, num_actions]
+  legal_action_mask: chex.Array  # [B, B, num_actions]
   extra_data: T  # [B, ...]
 
   # The following attributes are class variables (and should not be set on

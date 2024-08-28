@@ -89,7 +89,7 @@ def search(
   if max_depth is None:
     max_depth = num_simulations
   if invalid_actions is None:
-    invalid_actions = jnp.zeros_like(root.prior_logits)
+    invalid_actions = jnp.zeros_like(root.prior_logits, dtype=jnp.bool)
 
   def body_fun(sim, loop_state):
     rng_key, tree = loop_state
@@ -234,6 +234,7 @@ def expand(
   chex.assert_shape(step.reward, [batch_size])
   chex.assert_shape(step.discount, [batch_size])
   chex.assert_shape(step.value, [batch_size])
+  chex.assert_shape(step.legal_action_mask, [batch_size, tree.num_actions])
   tree = update_tree_node(
       tree, next_node_index, step.prior_logits, step.value, embedding)
 
@@ -247,7 +248,9 @@ def expand(
           tree.children_discounts, step.discount, parent_index, action),
       parents=batch_update(tree.parents, parent_index, next_node_index),
       action_from_parent=batch_update(
-          tree.action_from_parent, action, next_node_index))
+          tree.action_from_parent, action, next_node_index),
+      legal_action_mask=batch_update(
+        tree.legal_action_mask, step.legal_action_mask, next_node_index))
 
 
 @functools.partial(jax.vmap, in_axes=[0, 0, None, None])
@@ -312,15 +315,20 @@ def backward(
     leaf_value = reward + tree.children_discounts[parent, action] * leaf_value
 
     # Use the current tree.children_values as the flow estimates, and
-    # therefore, as the current estimate of the QF values.
-    prior_values = tree.children_values
+    # therefore, as the current estimate of the QF values. Mask out the invalid
+    # actions to prevent log-sum-exp errors.
+    prior_values = jnp.where(
+      tree.legal_action_mask[parent],
+      tree.children_values[parent],
+      jnp.finfo(tree.children_values.dtype).min,
+    )
 
     # TODO TESTING: Setting prior_logits[parent, action] = leaf_value.
-    prior_values = prior_values.at[parent, action].set(leaf_value)
+    prior_values = prior_values.at[action].set(leaf_value)
     new_parent_value = -(
-      leaf_value - prior_values[parent, action] +
-      jsp.special.logsumexp((alpha + 1) * prior_values[parent]) -
-      jsp.special.logsumexp(alpha * prior_values[parent])
+      leaf_value - prior_values[action] +
+      jsp.special.logsumexp((alpha + 1) * prior_values) -
+      jsp.special.logsumexp(alpha * prior_values)
     )
 
     # Take the average parent value with this update since we don't want a
@@ -398,17 +406,23 @@ def backward(
     )
     
     # Use the current tree.children_values as the flow estimates, and
-    # therefore, as the current estimate of the QF values.
-    prior_values = tree.children_values
+    # therefore, as the current estimate of the QF values. Mask out the invalid
+    # actions to prevent log-sum-exp errors.
+    prior_values = jnp.where(
+      tree.legal_action_mask[parent],
+      tree.children_values[parent],
+      jnp.finfo(tree.children_values.dtype).min,
+    )
+
     # TODO: TESTING Setting prior_logits[parent, action] = leaf_value. This has
     #       a very similar update structure to the MENTS paper. Also shows
     #       slight reduction in error compared to not doing it this way.
-    prior_values = prior_values.at[parent, action].set(leaf_value)
-    pv_adjusted = prior_values[parent] - curr_const_est_1 # Adjust the QF value.
+    prior_values = prior_values.at[action].set(leaf_value)
+    pv_adjusted = prior_values - curr_const_est_1 # Adjust the QF value.
     new_parent_value = -(
-      leaf_value - pv_adjusted[action] +
-      jsp.special.logsumexp((alpha + 1) * pv_adjusted) -
-      jsp.special.logsumexp(alpha * pv_adjusted)
+      leaf_value - prior_values[action] +
+      jsp.special.logsumexp((alpha + 1) * prior_values) -
+      jsp.special.logsumexp(alpha * prior_values)
     )
 
     # Take the average parent value with this update since we don't want a
@@ -442,8 +456,6 @@ def backward(
     tree = tree.replace(
         node_values=update(tree.node_values, parent_value, parent),
         node_visits=update(tree.node_visits, count + 1, parent),
-        children_prior_logits=update(tree.children_prior_logits,
-            new_child_prior_logits, parent, action),
         children_QF_const=update(tree.children_QF_const, parent_QF_const,
             parent, action),
         children_values=update(
@@ -532,12 +544,13 @@ def instantiate_tree_from_root(
   chex.assert_shape(root.value, [batch_size])
   num_nodes = num_simulations + 1
   data_dtype = root.value.dtype
+  min_val = jnp.finfo(data_dtype).min
   batch_node = (batch_size, num_nodes)
   batch_node_action = (batch_size, num_nodes, num_actions)
 
   def _zeros(x):
     return jnp.zeros(batch_node + x.shape[1:], dtype=x.dtype)
-
+  
   # Create a new empty tree state and fill its root.
   tree = Tree(
       node_visits=jnp.zeros(batch_node, dtype=jnp.int32),
@@ -550,14 +563,19 @@ def instantiate_tree_from_root(
           batch_node_action, Tree.UNVISITED, dtype=jnp.int32),
       children_prior_logits=jnp.zeros(
           batch_node_action, dtype=root.prior_logits.dtype),
-      children_values=jnp.zeros(batch_node_action, dtype=data_dtype),
+      children_values=min_val * jnp.ones(batch_node_action, dtype=data_dtype),
       children_visits=jnp.zeros(batch_node_action, dtype=jnp.int32),
       children_rewards=jnp.zeros(batch_node_action, dtype=data_dtype),
       children_discounts=jnp.zeros(batch_node_action, dtype=data_dtype),
       children_QF_const=jnp.zeros(batch_node_action, dtype=data_dtype),
       embeddings=jax.tree_util.tree_map(_zeros, root.embedding),
       root_invalid_actions=root_invalid_actions,
+      legal_action_mask=jnp.zeros(batch_node_action, dtype=jnp.bool),
       extra_data=extra_data)
+
+  tree = tree.replace(
+    legal_action_mask = tree.legal_action_mask.at[:, tree.ROOT_INDEX].set(
+      ~root_invalid_actions))
 
   root_index = jnp.full([batch_size], Tree.ROOT_INDEX)
   tree = update_tree_node(
