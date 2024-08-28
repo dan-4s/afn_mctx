@@ -335,14 +335,11 @@ def backward(
     discount = tree.children_discounts[parent, action]
     leaf_value = parent_value # Can't do anything here, discount is 1...
     new_child_value = discount * tree.node_values[index]
-    new_child_prior_logits = discount * tree.node_values[index]
     children_counts = tree.children_visits[parent, action] + 1
 
     tree = tree.replace(
         node_values=update(tree.node_values, parent_value, parent),
         node_visits=update(tree.node_visits, count + 1, parent),
-        children_prior_logits=update(tree.children_prior_logits,
-            new_child_prior_logits, parent, action),
         children_values=update(
             tree.children_values, new_child_value, parent, action),
         children_visits=update(
@@ -436,14 +433,11 @@ def backward(
     discount = tree.children_discounts[parent, action]
     leaf_value = parent_value # Can't do anything here, discount is 1...
     new_child_value = discount * tree.node_values[index]
-    new_child_prior_logits = discount * tree.node_values[index]
     children_counts = tree.children_visits[parent, action] + 1
 
     tree = tree.replace(
         node_values=update(tree.node_values, parent_value, parent),
         node_visits=update(tree.node_visits, count + 1, parent),
-        children_prior_logits=update(tree.children_prior_logits,
-            new_child_prior_logits, parent, action),
         children_QF_const=update(tree.children_QF_const, parent_QF_const,
             parent, action),
         children_values=update(
@@ -532,6 +526,7 @@ def instantiate_tree_from_root(
   chex.assert_shape(root.value, [batch_size])
   num_nodes = num_simulations + 1
   data_dtype = root.value.dtype
+  min_val = jnp.finfo(data_dtype).min
   batch_node = (batch_size, num_nodes)
   batch_node_action = (batch_size, num_nodes, num_actions)
 
@@ -550,7 +545,7 @@ def instantiate_tree_from_root(
           batch_node_action, Tree.UNVISITED, dtype=jnp.int32),
       children_prior_logits=jnp.zeros(
           batch_node_action, dtype=root.prior_logits.dtype),
-      children_values=jnp.zeros(batch_node_action, dtype=data_dtype),
+      children_values=min_val*jnp.ones(batch_node_action, dtype=data_dtype),
       children_visits=jnp.zeros(batch_node_action, dtype=jnp.int32),
       children_rewards=jnp.zeros(batch_node_action, dtype=data_dtype),
       children_discounts=jnp.zeros(batch_node_action, dtype=data_dtype),
