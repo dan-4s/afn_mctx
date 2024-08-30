@@ -87,7 +87,7 @@ def _run_gumbel_alphazero_demo(
       recurrent_fn=recurrent_fn,
       num_simulations=num_simulations,
       max_num_considered_actions=max_num_considered_actions,
-      max_depth=2,
+      max_depth=10, # POST-TERMINAL TESTING.
       qtransform=functools.partial(
           afn_mctx.qtransform_completed_by_mix_value,
           use_mixed_value=False),

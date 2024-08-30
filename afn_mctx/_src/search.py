@@ -322,6 +322,12 @@ def backward(
       jsp.special.logsumexp((alpha + 1) * prior_values[parent]) -
       jsp.special.logsumexp(alpha * prior_values[parent])
     )
+    # Protect against infinite parent values due to post-terminal states.
+    new_parent_value = jnp.where(
+      condition=jnp.all(jnp.exp(prior_values[parent]) == 0),
+      x=jnp.finfo(new_parent_value.dtype).min,
+      y=new_parent_value,
+    )
 
     # Take the average parent value with this update since we don't want a
     # single bad estimate to throw off the entire estimate.
@@ -348,6 +354,8 @@ def backward(
     return tree, leaf_value, parent
   
   def afn_const_body_fun(loop_state):
+    # NOTE: WE DON'T NEED TO ESTIMATE THE CONSTANT!!!! THE QF ESTIMATES ARE ALL FROM
+    # RAW FLOW ESTIMATES! THEY DON'T EVEN USE THE FUCKING PRIOR LOGITS!
     """
     Compute recursive updates using the generalised TB update (also known as
     the mellowmax operator). This code also predicts a constant from the
@@ -547,7 +555,7 @@ def instantiate_tree_from_root(
           batch_node_action, dtype=root.prior_logits.dtype),
       children_values=min_val*jnp.ones(batch_node_action, dtype=data_dtype),
       children_visits=jnp.zeros(batch_node_action, dtype=jnp.int32),
-      children_rewards=jnp.zeros(batch_node_action, dtype=data_dtype),
+      children_rewards=min_val*jnp.ones(batch_node_action, dtype=data_dtype),
       children_discounts=jnp.zeros(batch_node_action, dtype=data_dtype),
       children_QF_const=jnp.zeros(batch_node_action, dtype=data_dtype),
       embeddings=jax.tree_util.tree_map(_zeros, root.embedding),
