@@ -309,7 +309,8 @@ def backward(
     count = tree.node_visits[parent]
     action = tree.action_from_parent[index]
     reward = tree.children_rewards[parent, action]
-    leaf_value = reward + tree.children_discounts[parent, action] * leaf_value
+    discount = tree.children_discounts[parent, action]
+    leaf_value = (1 - discount) * reward + discount * leaf_value
 
     # Use the current tree.children_values as the flow estimates, and
     # therefore, as the current estimate of the QF values.
@@ -324,28 +325,35 @@ def backward(
     )
     # Protect against infinite parent values due to post-terminal states.
     new_parent_value = jnp.where(
-      condition=jnp.all(jnp.exp(prior_values[parent]) == 0),
-      x=jnp.finfo(new_parent_value.dtype).min,
-      y=new_parent_value,
+      jnp.all(jnp.exp(prior_values[parent]) == 0),
+      tree.node_values[parent],
+      # jnp.finfo(new_parent_value.dtype).min,
+      (tree.node_values[parent] * count + new_parent_value) / (count + 1.0),
+    )
+    new_count = jnp.where(
+      jnp.all(jnp.exp(prior_values[parent]) == 0),
+      count,
+      count + 1,
     )
 
     # Take the average parent value with this update since we don't want a
     # single bad estimate to throw off the entire estimate.
-    parent_value = (
-        tree.node_values[parent] * count + new_parent_value) / (count + 1.0)
+    # parent_value = (
+    #     tree.node_values[parent] * count + new_parent_value) / (count + 1.0)
     
     # Set up the updates for the various tracked values. NOTE: we must ensure
     # that node_values and children_values are zeroed out for terminal and
     # post-terminal states!!! The value of a terminal state must come only from
     # the reward obtained at that state!
     discount = tree.children_discounts[parent, action]
-    leaf_value = parent_value # Can't do anything here, discount is 1...
-    new_child_value = discount * tree.node_values[index]
+    leaf_value = new_parent_value # Can't do anything here, discount is 1...
+    # new_child_value = (1-discount) * (jnp.finfo(new_parent_value.dtype).min) + discount * tree.node_values[index]
+    new_child_value = (1-discount) * reward + discount * tree.node_values[index]
     children_counts = tree.children_visits[parent, action] + 1
 
     tree = tree.replace(
-        node_values=update(tree.node_values, parent_value, parent),
-        node_visits=update(tree.node_visits, count + 1, parent),
+        node_values=update(tree.node_values, new_parent_value, parent),
+        node_visits=update(tree.node_visits, new_count, parent),
         children_values=update(
             tree.children_values, new_child_value, parent, action),
         children_visits=update(
@@ -545,7 +553,7 @@ def instantiate_tree_from_root(
   tree = Tree(
       node_visits=jnp.zeros(batch_node, dtype=jnp.int32),
       raw_values=jnp.zeros(batch_node, dtype=data_dtype),
-      node_values=jnp.zeros(batch_node, dtype=data_dtype),
+      node_values=min_val*jnp.ones(batch_node, dtype=data_dtype),
       parents=jnp.full(batch_node, Tree.NO_PARENT, dtype=jnp.int32),
       action_from_parent=jnp.full(
           batch_node, Tree.NO_PARENT, dtype=jnp.int32),
