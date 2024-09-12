@@ -140,6 +140,6 @@ class SearchSummary:
 def _unbatched_qvalues(tree: Tree, index: int) -> int:
   chex.assert_rank(tree.children_discounts, 2)
   return (  # pytype: disable=bad-return-type  # numpy-scalars
-      tree.children_rewards[index]
+      (1 - tree.children_discounts[index]) * tree.children_rewards[index]
       + tree.children_discounts[index] * tree.children_values[index]
   )

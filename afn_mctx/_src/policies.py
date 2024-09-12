@@ -243,6 +243,7 @@ def gumbel_aflownet_policy(
     *,
     qtransform: base.QTransform = qtransforms.qtransform_completed_by_mix_value,
     backward_method: str = "AFN",
+    alpha: float = 1.0,
     max_num_considered_actions: int = 16,
     gumbel_scale: chex.Numeric = 1.,
 ) -> base.PolicyOutput[action_selection.GumbelMuZeroExtraData]:
@@ -267,7 +268,8 @@ def gumbel_aflownet_policy(
     qtransform: function to obtain completed Q-values for a node.
     backward_method: Defaults to "AFN" but can also be AFN_CONST. The
       difference is that AFN_CONST predicts the QF constant. Use this when
-      training with a KL divergence on the softmax of the children_values. 
+      training with a KL divergence on the softmax of the children_values.
+    alpha: The hyperparameter that dictates the "softness" of flow propagation.
     max_num_considered_actions: the maximum number of actions expanded at the
       root node. A smaller number of actions will be expanded if the number of
       valid actions is smaller.
@@ -309,7 +311,8 @@ def gumbel_aflownet_policy(
       invalid_actions=invalid_actions,
       extra_data=extra_data,
       loop_fn=loop_fn,
-      backward_method=backward_method)
+      backward_method=backward_method,
+      alpha=alpha)
   summary = search_tree.summary()
 
   # Acting with the best action from the most visited actions.
@@ -328,7 +331,8 @@ def gumbel_aflownet_policy(
   # Producing action_weights usable to train the policy network.
   completed_search_logits = _mask_invalid_actions(
       root.prior_logits + completed_qvalues, invalid_actions)
-  action_weights = jax.nn.softmax(completed_search_logits)
+  # Corresponds to \pi^\alpha(s_0).
+  action_weights = jax.nn.softmax(alpha * completed_search_logits)
   return base.PolicyOutput(
       action=action,
       action_weights=action_weights,

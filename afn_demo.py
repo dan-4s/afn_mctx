@@ -202,10 +202,52 @@ def _run_aflownet_demo(
           afn_mctx.qtransform_completed_by_mix_value,
           use_mixed_value=False),
       backward_method=backward_method, # AFN or AFN_CONST -> AFN doesn't predict the QF constant.
+      alpha=1.0, # Change to 10 if you want a spikier policy.
   )
 
-  return rng_key, policy_output
+  root2 = afn_mctx.RootFnOutput(
+      prior_logits=jnp.log(policy_output.action_weights),
+      value=log_root_flow,
+      # The embedding is any environment state information.
+      embedding=states,
+  )
+  policy_output2 = afn_mctx.gumbel_aflownet_policy(
+      params=(),
+      rng_key=search_rng,
+      root=root2,
+      recurrent_fn=recurrent_fn,
+      num_simulations=num_simulations,
+      max_num_considered_actions=max_num_considered_actions,
+      max_depth=3,
+      qtransform=functools.partial(
+          afn_mctx.qtransform_completed_by_mix_value,
+          use_mixed_value=False),
+      backward_method=backward_method, # AFN or AFN_CONST -> AFN doesn't predict the QF constant.
+      alpha=1.0, # Change to 10 if you want a spikier policy.
+  )
 
+  root3 = afn_mctx.RootFnOutput(
+      prior_logits=jnp.log(policy_output2.action_weights),
+      value=log_root_flow,
+      # The embedding is any environment state information.
+      embedding=states,
+  )
+  policy_output3 = afn_mctx.gumbel_aflownet_policy(
+      params=(),
+      rng_key=search_rng,
+      root=root3,
+      recurrent_fn=recurrent_fn,
+      num_simulations=num_simulations,
+      max_num_considered_actions=max_num_considered_actions,
+      max_depth=3,
+      qtransform=functools.partial(
+          afn_mctx.qtransform_completed_by_mix_value,
+          use_mixed_value=False),
+      backward_method=backward_method, # AFN or AFN_CONST -> AFN doesn't predict the QF constant.
+      alpha=1.0, # Change to 10 if you want a spikier policy.
+  )
+
+  return rng_key, policy_output, policy_output2, policy_output3
 
 def _make_afn_recurrent_fn(game_obj: Game, num_actions: int, priors_method: str, noise_level: float):
   """
@@ -313,7 +355,7 @@ def main(_):
     all_KLs = []
     for i in range(len(noise_schedule)):
       #We'll reuse the same rng_key for all experiments.
-      _, policy_output = jitted_run_demo(rng_key, sims, "mixed", noise_schedule[i], "AFN_CONST")
+      _, policy_output, policy_output2, policy_output3 = jitted_run_demo(rng_key, sims, "mixed", noise_schedule[i], "AFN")
 
       # Compute the error on the estimated flows.
       tree = policy_output.search_tree
@@ -331,11 +373,17 @@ def main(_):
       avg_policy_div = jnp.average(policy_div)
       all_KLs.append(avg_policy_div)
 
-      # print(jnp.exp(tree.children_values[0, 0:9]))
-      # print(jnp.exp(tree.node_values[0, 0:9]))
-      # print(tree.parents[0, 0:9])
-      # print(tree.action_from_parent[0, 0:9])
-      # breakpoint()
+      print(jnp.exp(tree.children_values[0, 0:9]))
+      print(jnp.exp(tree.node_values[0, 0:9]))
+      print(tree.parents[0, 0:9])
+      print(tree.action_from_parent[0, 0:9])
+
+      print(f"Ground truth policy: {jax.nn.softmax(gt_log_flows[1:])}")
+      print(f"Policy from MCTS children flows: {jax.nn.softmax(tree.children_values[0, 0])}")
+      print(f"Gumbel policy 1st iteration: {policy_output.action_weights[0]}")
+      print(f"Gumbel policy 2nd iteration: {policy_output2.action_weights[0]}")
+      print(f"Gumbel policy 3rd iteration: {policy_output3.action_weights[0]}")
+      breakpoint()
     sims_to_errors[sims] = all_errors
     sims_to_KLs[sims] = all_KLs
   

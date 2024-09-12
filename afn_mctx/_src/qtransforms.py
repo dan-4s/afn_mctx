@@ -89,7 +89,7 @@ def qtransform_completed_by_mix_value(
     node_index: chex.Numeric,
     *,
     value_scale: chex.Numeric = 0.1,
-    maxvisit_init: chex.Numeric = 50.0,
+    maxvisit_init: chex.Numeric = 1.0, # 50.0,
     rescale_values: bool = True,
     use_mixed_value: bool = True,
     epsilon: chex.Numeric = 1e-8,
@@ -122,7 +122,7 @@ def qtransform_completed_by_mix_value(
   visit_counts = tree.children_visits[node_index]
 
   # Computing the mixed value and producing completed_qvalues.
-  raw_value = tree.raw_values[node_index]
+  raw_value = -tree.raw_values[node_index]
   # TODO: investigate whether we can use children_values instead of the prior
   # logits here. It would give more accurate flow and probability estimates.
   # I don't think this line is too consequential, however...
@@ -144,7 +144,8 @@ def qtransform_completed_by_mix_value(
     completed_qvalues = _rescale_qvalues(completed_qvalues, epsilon)
   maxvisit = jnp.max(visit_counts, axis=-1)
   visit_scale = maxvisit_init + maxvisit
-  return visit_scale * value_scale * completed_qvalues
+  # return visit_scale * value_scale * completed_qvalues
+  return value_scale * completed_qvalues
 
 
 def _rescale_qvalues(qvalues, epsilon):
