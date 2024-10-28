@@ -316,7 +316,6 @@ def backward(
     # therefore, as the current estimate of the QF values.
     prior_values = tree.children_values
 
-    # TODO TESTING: Setting prior_logits[parent, action] = leaf_value.
     prior_values = prior_values.at[parent, action].set(leaf_value)
     new_parent_value = -(
       leaf_value - prior_values[parent, action] +
