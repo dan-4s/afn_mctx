@@ -28,10 +28,7 @@ from afn_mctx._src.base import RecurrentFnOutput
 from afn_mctx._src.base import RecurrentState
 from afn_mctx._src.base import RootActionSelectionFn
 from afn_mctx._src.base import RootFnOutput
-from afn_mctx._src.policies import gumbel_muzero_policy
 from afn_mctx._src.policies import gumbel_aflownet_policy
-from afn_mctx._src.policies import muzero_policy
-from afn_mctx._src.policies import stochastic_muzero_policy
 from afn_mctx._src.qtransforms import qtransform_by_min_max
 from afn_mctx._src.qtransforms import qtransform_by_parent_and_siblings
 from afn_mctx._src.qtransforms import qtransform_completed_by_mix_value

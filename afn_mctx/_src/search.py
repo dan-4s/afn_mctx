@@ -42,8 +42,9 @@ def search(
     invalid_actions: Optional[chex.Array] = None,
     extra_data: Any = None,
     loop_fn: base.LoopFn = jax.lax.fori_loop,
-    backward_method: Optional[str] = None,
-    alpha: Optional[float] = 1.0) -> Tree:
+    adversarial: Optional[bool] = False,
+    alpha: Optional[float] = 1.0,
+    omega: Optional[float] = 1.0) -> Tree:
   """Performs a full search and returns sampled actions.
 
   In the shape descriptions, `B` denotes the batch dimension.
@@ -70,9 +71,9 @@ def search(
     extra_data: extra data passed to `tree.extra_data`. Shape `[B, ...]`.
     loop_fn: Function used to run the simulations. It may be required to pass
       hk.fori_loop if using this function inside a Haiku module.
-    backward_method: String which specifies the method for backwards flow
-      propagation. Options: `None` for classic Gumbel method and 'AFN'.
+    adversarial: `bool` which flags whether this is an adversarial setting.
     alpha: Number to use for the exponentiated flow.
+    omega: Softmax temperature in the soft mellowmax operator.
 
   Returns:
     `SearchResults` containing outcomes of the search, e.g. `visit_counts`
@@ -106,7 +107,7 @@ def search(
     tree = expand(
         params, expand_key, tree, recurrent_fn, parent_index,
         action, next_node_index)
-    tree = backward(tree, next_node_index, backward_method, alpha)
+    tree = backward(tree, next_node_index, adversarial, alpha, omega)
     loop_state = rng_key, tree
     return loop_state
 
@@ -250,12 +251,14 @@ def expand(
           tree.action_from_parent, action, next_node_index))
 
 
-@functools.partial(jax.vmap, in_axes=[0, 0, None, None])
+@functools.partial(jax.vmap, in_axes=[0, 0, None, None, None])
 def backward(
     tree: Tree[T],
     leaf_index: chex.Numeric,
-    backward_method: str,
-    alpha: float) -> Tree[T]:
+    adversarial: bool,
+    alpha: float,
+    omega: float,
+  ) -> Tree[T]:
   """Goes up and updates the tree until all nodes reached the root.
 
   Args:
@@ -270,29 +273,6 @@ def backward(
     _, _, index = loop_state
     return index != Tree.ROOT_INDEX
 
-  def body_fun(loop_state):
-    # Here we update the value of our parent, so we start by reversing.
-    tree, leaf_value, index = loop_state
-    parent = tree.parents[index]
-    count = tree.node_visits[parent]
-    action = tree.action_from_parent[index]
-    reward = tree.children_rewards[parent, action]
-    leaf_value = reward + tree.children_discounts[parent, action] * leaf_value
-    parent_value = (
-        tree.node_values[parent] * count + leaf_value) / (count + 1.0)
-    children_values = tree.node_values[index]
-    children_counts = tree.children_visits[parent, action] + 1
-
-    tree = tree.replace(
-        node_values=update(tree.node_values, parent_value, parent),
-        node_visits=update(tree.node_visits, count + 1, parent),
-        children_values=update(
-            tree.children_values, children_values, parent, action),
-        children_visits=update(
-            tree.children_visits, children_counts, parent, action))
-
-    return tree, leaf_value, parent
-  
   def afn_body_fun(loop_state):
     """
     Compute recursive updates using the generalised TB update (also known as
@@ -300,8 +280,9 @@ def backward(
 
     NOTE: `leaf_value` is here used to represent the flow of the prior node in\
           the search tree. The leaf value is expected to be from the\
-          perspective of the parent. Thus, for each node, we must invert its\
-          flow prediction to put it in the perspective of the opponent.
+          perspective of the parent. Thus, in an adversarial setting,\
+          for each node, we must invert its flow prediction to put it\
+          in the perspective of the opponent.
     """
     # Here we update the value of our parent, so we start by reversing.
     tree, leaf_value, index = loop_state
@@ -310,23 +291,23 @@ def backward(
     action = tree.action_from_parent[index]
     reward = tree.children_rewards[parent, action]
     discount = tree.children_discounts[parent, action]
-    leaf_value = (1 - discount) * reward + discount * leaf_value
+    # When discount = 0, we have a terminal state.
+    leaf_value = jnp.where(discount == 0.0, reward, discount * leaf_value)
 
     # Use the current tree.children_values as the flow estimates, and
     # therefore, as the current estimate of the QF values.
     prior_values = tree.children_values
-
     prior_values = prior_values.at[parent, action].set(leaf_value)
-    new_parent_value = -(
-      leaf_value - prior_values[parent, action] +
-      jsp.special.logsumexp((alpha + 1) * prior_values[parent]) -
+    coeff = jnp.where(adversarial, -1, 1) # Whether to invert the flow.
+    new_parent_value = coeff * (1 / omega) * (
+      jsp.special.logsumexp((alpha + omega) * prior_values[parent]) -
       jsp.special.logsumexp(alpha * prior_values[parent])
     )
+
     # Protect against infinite parent values due to post-terminal states.
     new_parent_value = jnp.where(
       jnp.all(jnp.exp(prior_values[parent]) == 0),
       tree.node_values[parent],
-      # jnp.finfo(new_parent_value.dtype).min,
       (tree.node_values[parent] * count + new_parent_value) / (count + 1.0),
     )
     new_count = jnp.where(
@@ -335,19 +316,13 @@ def backward(
       count + 1,
     )
 
-    # Take the average parent value with this update since we don't want a
-    # single bad estimate to throw off the entire estimate.
-    # parent_value = (
-    #     tree.node_values[parent] * count + new_parent_value) / (count + 1.0)
-    
     # Set up the updates for the various tracked values. NOTE: we must ensure
     # that node_values and children_values are zeroed out for terminal and
     # post-terminal states!!! The value of a terminal state must come only from
     # the reward obtained at that state!
     discount = tree.children_discounts[parent, action]
     leaf_value = new_parent_value # Can't do anything here, discount is 1...
-    # new_child_value = (1-discount) * (jnp.finfo(new_parent_value.dtype).min) + discount * tree.node_values[index]
-    new_child_value = (1-discount) * reward + discount * tree.node_values[index]
+    new_child_value = jnp.where(discount == 0.0, reward, tree.node_values[index])
     children_counts = tree.children_visits[parent, action] + 1
 
     tree = tree.replace(
@@ -360,13 +335,9 @@ def backward(
 
     return tree, leaf_value, parent
 
-  if(backward_method == "AFN"):
-    body_method = afn_body_fun
-  else:
-    body_method = body_fun
   leaf_index = jnp.asarray(leaf_index, dtype=jnp.int32)
   loop_state = (tree, tree.node_values[leaf_index], leaf_index)
-  tree, _, _ = jax.lax.while_loop(cond_fun, body_method, loop_state)
+  tree, _, _ = jax.lax.while_loop(cond_fun, afn_body_fun, loop_state)
 
   return tree
 

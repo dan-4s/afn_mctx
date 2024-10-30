@@ -35,114 +35,12 @@ class DemoOutput:
   action_weights_policy_value: chex.Array
 
 
-def _run_gumbel_alphazero_demo(
-    rng_key: chex.PRNGKey,
-  ) -> Tuple[chex.PRNGKey, DemoOutput]:
-  """
-  Runs a search algorithm on a 2-level binary tree using Gumbel MCTS for
-  AlphaZero.
-  """
-  # Get all the flag values.
-  batch_size = FLAGS.batch_size
-  num_actions = FLAGS.num_actions
-  num_simulations = FLAGS.num_simulations
-  max_num_considered_actions = FLAGS.max_num_considered_actions
-
-  # Get more keys
-  rng_key, logits_rng, q_rng, search_rng, env_key = jax.random.split(rng_key, 5)
-
-  # Define the environment.
-  env_keys = jax.random.split(env_key, batch_size)
-  game_obj = Game()
-  states = jax.vmap(Game.init)(env_keys)
-
-  # The prior logits will all be random priors.
-  prior_logits = jax.random.normal(
-      logits_rng, shape=[batch_size, num_actions])
-  
-  # The prior q-value estimates will be random as well (no NN).
-  qvalues = jax.random.uniform(q_rng, shape=prior_logits.shape)
-
-  # Use the prior policy and q-value estimates to generate the value estimate
-  # of the root node. Shape = [B].
-  root_value = jnp.sum(jax.nn.softmax(prior_logits) * qvalues, axis=-1)
-
-  # The root output is used in the search tree.
-  root = afn_mctx.RootFnOutput(
-      prior_logits=prior_logits,
-      value=root_value,
-      # The embedding is any environment state information.
-      embedding=states,
-  )
-
-  # The recurrent_fn takes care of environmental interactions estimating policy
-  # and value priors if these are used in the algorithms.
-  recurrent_fn = _make_alphazero_recurrent_fn(game_obj, num_actions)
-
-  # Running the search.
-  policy_output = afn_mctx.gumbel_muzero_policy(
-      params=(),
-      rng_key=search_rng,
-      root=root,
-      recurrent_fn=recurrent_fn,
-      num_simulations=num_simulations,
-      max_num_considered_actions=max_num_considered_actions,
-      max_depth=10, # POST-TERMINAL TESTING.
-      qtransform=functools.partial(
-          afn_mctx.qtransform_completed_by_mix_value,
-          use_mixed_value=False),
-  )
-
-  return rng_key, policy_output
-
-
-def _make_alphazero_recurrent_fn(game_obj: Game, num_actions: int):
-  """
-    Returns a recurrent_fn for an AlphaZero on a 2-level binary tree.
-  """
-
-  def recurrent_fn(params, rng_key, action, states: GameState):
-    del params
-    # Extract the rewards from the environment after taking an action.
-    states = jax.vmap(game_obj.step)(state=states, action=action)
-    reward = jax.vmap(game_obj.rewards, in_axes=[0, None])(states, False)
-    terminated = states.game_over
-
-    # NOTE: Invert rewards to achieve correct operation! This is because the
-    #       rewards are technically from the previous player's point of view!
-    reward = -reward
-    
-    # Predict logits and values using RNG.
-    batch_size = reward.shape[0]
-    rng_key, policy_rng_key = jax.random.split(rng_key, 2)
-    rng_key, value_rng_key = jax.random.split(rng_key, 2)
-    predicted_logits = jax.random.uniform(policy_rng_key, (batch_size, num_actions))
-    predicted_value = jax.random.uniform(value_rng_key, (batch_size,))
-    predicted_value = jnp.where(terminated, 0.0, predicted_value)
-
-    # Since this is AlphaZero-like in a two-player environment, we want to
-    # apply a negation to the reward as a discount. If we're at a terminal
-    # state, then the discount is zero. If we're at a non-terminal state, the
-    # discount is -1.
-    discount = -1.0 * jnp.ones_like(reward)
-    discount = jnp.where(terminated, 0.0, discount)
-    recurrent_fn_output = afn_mctx.RecurrentFnOutput(
-        reward=reward,
-        discount=discount,
-        prior_logits=predicted_logits,
-        value=predicted_value,
-    )
-    return recurrent_fn_output, states
-
-  return recurrent_fn
-
-
 def _run_aflownet_demo(
     rng_key: chex.PRNGKey,
     num_simulations,
     priors_method,
     noise_level,
-    backward_method,
+    adversarial,
   ) -> Tuple[chex.PRNGKey, DemoOutput]:
   """
   Runs a search algorithm on a 2-level binary tree using MCTS for AFlowNets.
@@ -169,7 +67,10 @@ def _run_aflownet_demo(
   if(priors_method == "random"):
     log_flows = jax.random.normal(logits_rng, shape=[batch_size, 2])
   else:
-    log_flows = jnp.log(jnp.array([[11/101, 110/101]] * batch_size))
+    if(adversarial):
+      log_flows = jnp.log(jnp.array([[11/101, 110/101]] * batch_size))
+    else:
+      log_flows = jnp.log(jnp.array([[101/110, 101/11]] * batch_size))
   prior_logits = log_flows # These can be log flows, a softmax, or log softmax.
 
   # Use the prior policy and q-value estimates to generate the value estimate
@@ -187,7 +88,7 @@ def _run_aflownet_demo(
 
   # The recurrent_fn takes care of environmental interactions estimating policy
   # and value priors if these are used in the algorithms.
-  recurrent_fn = _make_afn_recurrent_fn(game_obj, num_actions, priors_method, noise_level)
+  recurrent_fn = _make_afn_recurrent_fn(game_obj, num_actions, priors_method, noise_level, adversarial)
 
   # Running the search.
   policy_output = afn_mctx.gumbel_aflownet_policy(
@@ -201,58 +102,21 @@ def _run_aflownet_demo(
       qtransform=functools.partial(
           afn_mctx.qtransform_completed_by_mix_value,
           use_mixed_value=False),
-      backward_method=backward_method, # AFN or AFN_CONST -> AFN doesn't predict the QF constant.
+      adversarial=adversarial,
       alpha=1.0, # Change to 10 if you want a spikier policy.
+      omega=1.0, # Change to 10 if you want a spikier policy.
   )
 
-  root2 = afn_mctx.RootFnOutput(
-      prior_logits=jnp.log(policy_output.action_weights),
-      value=log_root_flow,
-      # The embedding is any environment state information.
-      embedding=states,
-  )
-  policy_output2 = afn_mctx.gumbel_aflownet_policy(
-      params=(),
-      rng_key=search_rng,
-      root=root2,
-      recurrent_fn=recurrent_fn,
-      num_simulations=num_simulations,
-      max_num_considered_actions=max_num_considered_actions,
-      max_depth=3,
-      qtransform=functools.partial(
-          afn_mctx.qtransform_completed_by_mix_value,
-          use_mixed_value=False),
-      backward_method=backward_method, # AFN or AFN_CONST -> AFN doesn't predict the QF constant.
-      alpha=1.0, # Change to 10 if you want a spikier policy.
-  )
+  return rng_key, policy_output
 
-  root3 = afn_mctx.RootFnOutput(
-      prior_logits=jnp.log(policy_output2.action_weights),
-      value=log_root_flow,
-      # The embedding is any environment state information.
-      embedding=states,
-  )
-  policy_output3 = afn_mctx.gumbel_aflownet_policy(
-      params=(),
-      rng_key=search_rng,
-      root=root3,
-      recurrent_fn=recurrent_fn,
-      num_simulations=num_simulations,
-      max_num_considered_actions=max_num_considered_actions,
-      max_depth=3,
-      qtransform=functools.partial(
-          afn_mctx.qtransform_completed_by_mix_value,
-          use_mixed_value=False),
-      backward_method=backward_method, # AFN or AFN_CONST -> AFN doesn't predict the QF constant.
-      alpha=1.0, # Change to 10 if you want a spikier policy.
-  )
-
-  return rng_key, policy_output, policy_output2, policy_output3
-
-def _make_afn_recurrent_fn(game_obj: Game, num_actions: int, priors_method: str, noise_level: float):
+def _make_afn_recurrent_fn(game_obj: Game, num_actions: int, priors_method: str, noise_level: float, adversarial: bool):
   """
     Returns a recurrent_fn for an AlphaZero on a 2-level binary tree.
   """
+  if(adversarial):
+    QF_out = [jnp.array([11/101, 110/101]), jnp.array([10, 1]), jnp.array([1, 0.1])]
+  else:
+    QF_out = [jnp.array([101/110, 101/11]), jnp.array([0.1, 1]), jnp.array([1, 10])]
 
   def recurrent_fn(params, rng_key, action, states: GameState):
     del params
@@ -266,7 +130,8 @@ def _make_afn_recurrent_fn(game_obj: Game, num_actions: int, priors_method: str,
 
     # NOTE: Invert rewards to achieve correct operation! This is because the
     #       rewards are technically from the previous player's point of view!
-    reward = -reward
+    coeff = jnp.where(adversarial, -1, 1)
+    reward = coeff * reward
     
     if(priors_method == "ground_truth" or priors_method == "mixed"):
       # Set the ground truth probabilities. (I know this is ugly, just bear with me).
@@ -328,7 +193,6 @@ def _make_afn_recurrent_fn(game_obj: Game, num_actions: int, priors_method: str,
 
 def main(_):
   rng_key = jax.random.PRNGKey(FLAGS.seed) # TODO: Change the seed.
-  jitted_run_demo = jax.jit(_run_gumbel_alphazero_demo)
   # print("\n================================")
   # print("\tAlphaZero demos")
   # for i in range(FLAGS.num_runs):
@@ -355,7 +219,7 @@ def main(_):
     all_KLs = []
     for i in range(len(noise_schedule)):
       #We'll reuse the same rng_key for all experiments.
-      _, policy_output, policy_output2, policy_output3 = jitted_run_demo(rng_key, sims, "mixed", noise_schedule[i], "AFN")
+      _, policy_output = jitted_run_demo(rng_key, sims, "mixed", noise_schedule[i], False)
 
       # Compute the error on the estimated flows.
       tree = policy_output.search_tree
@@ -381,8 +245,6 @@ def main(_):
       print(f"Ground truth policy: {jax.nn.softmax(gt_log_flows[1:])}")
       print(f"Policy from MCTS children flows: {jax.nn.softmax(tree.children_values[0, 0])}")
       print(f"Gumbel policy 1st iteration: {policy_output.action_weights[0]}")
-      print(f"Gumbel policy 2nd iteration: {policy_output2.action_weights[0]}")
-      print(f"Gumbel policy 3rd iteration: {policy_output3.action_weights[0]}")
       breakpoint()
     sims_to_errors[sims] = all_errors
     sims_to_KLs[sims] = all_KLs
