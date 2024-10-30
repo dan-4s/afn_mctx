@@ -54,8 +54,8 @@ class Tree(Generic[T]):
   children_QF_const: `[B, N, num_actions]` the softmax constant estimated for
     each child.
   embeddings: `[B, N, ...]` the state embeddings of each node.
-  root_invalid_actions: `[B, num_actions]` a mask with invalid actions at the
-    root. In the mask, invalid actions have ones, and valid actions have zeros.
+  invalid_actions: `[B, num_actions]` a mask with invalid actions. In the mask,
+    invalid actions have ones, and valid actions have zeros.
   extra_data: `[B, ...]` extra data passed to the search.
   """
   node_visits: chex.Array  # [B, N]
@@ -71,7 +71,7 @@ class Tree(Generic[T]):
   children_values: chex.Array  # [B, N, num_actions]
   children_QF_const: chex.Array  # [B, N, num_actions]
   embeddings: Any  # [B, N, ...]
-  root_invalid_actions: chex.Array  # [B, num_actions]
+  invalid_actions: chex.Array  # [B, N, num_actions]
   extra_data: T  # [B, ...]
 
   # The following attributes are class variables (and should not be set on
@@ -139,7 +139,9 @@ class SearchSummary:
 
 def _unbatched_qvalues(tree: Tree, index: int) -> int:
   chex.assert_rank(tree.children_discounts, 2)
+  discounts = tree.children_discounts[index]
+  rewards = tree.children_rewards[index]
+  qvalues = discounts * tree.children_values[index]
   return (  # pytype: disable=bad-return-type  # numpy-scalars
-      (1 - tree.children_discounts[index]) * tree.children_rewards[index]
-      + tree.children_discounts[index] * tree.children_values[index]
+      jnp.where(discounts == 0.0, rewards, qvalues)
   )

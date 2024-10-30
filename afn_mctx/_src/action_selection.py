@@ -38,11 +38,69 @@ def switching_action_selection_wrapper(
       depth: base.Depth) -> chex.Array:
     return jax.lax.cond(
         depth == 0,
-        lambda x: root_action_selection_fn(*x[:3]),
+        # lambda x: root_action_selection_fn(*x[:3]),
+        lambda x: root_action_selection_fn(*x[:4]),
         lambda x: interior_action_selection_fn(*x),
         (rng_key, tree, node_index, depth))
 
   return switching_action_selection_fn
+
+
+def soft_sampling_fn(
+      rng_key: chex.PRNGKey,
+      tree: tree_lib.Tree,
+      node_index: base.NodeIndices,
+      depth: base.Depth,
+      *,
+      alpha: float = 1.0,
+      omega: float = 1.0,
+      adversarial: bool = False,
+      qtransform: base.QTransform = qtransforms.qtransform_completed_by_mix_value, # TODO: Define a new Q-transform. 
+) -> chex.Array:
+  """
+  Returns the stochastically selected action from the soft mellowmax policy
+  function. 
+
+  Q-values (state-action flow) are completed with the parent's flow prediction.
+
+  Args:
+    rng_key: random number generator state.
+    tree: _unbatched_ MCTS tree state.
+    node_index: scalar index of the node from which to select an action.
+    depth: the scalar depth of the current node. The root has depth zero.
+    alpha: constant c_1 in the PUCT formula.
+    omage: constant c_2 in the PUCT formula.
+    adversarial: `bool` whether the environment is adversarial.
+    qtransform: a monotonic transformation of the Q-values.
+
+  Returns:
+    action: the stochastically sampled action following the soft mellowmax\
+      policy.
+
+  """
+  rng_key, cat_key, noise_key = jax.random.split(rng_key, 3)
+  chex.assert_shape([node_index], ())
+  visit_counts = tree.children_visits[node_index]
+  prior_logits = tree.children_prior_logits[node_index]
+  chex.assert_equal_shape([visit_counts, prior_logits])
+  completed_qvalues = qtransform(tree, node_index)
+  invalid_actions = tree.invalid_actions[node_index]
+
+  # Construct the soft mellowmax policy: exp(alpha * whatever) / sum(...).
+  parent_logits = alpha * completed_qvalues # TODO: Add random noise which decays with num_simulations!!!
+  
+  # Mask invalid actions.
+  parent_logits = jnp.where(
+      invalid_actions,
+      -jnp.inf,
+      parent_logits,
+  )
+
+  # Sample from the constructed parent policy.
+  actions = jax.random.categorical(key=cat_key, logits=parent_logits, axis=-1)
+  chex.assert_shape([actions], ())
+
+  return actions
 
 
 def muzero_action_selection(
@@ -133,11 +191,12 @@ def gumbel_muzero_root_action_selection(
   prior_logits = tree.children_prior_logits[node_index]
   chex.assert_equal_shape([visit_counts, prior_logits])
   completed_qvalues = qtransform(tree, node_index)
+  root_invalid_actions = tree.invalid_actions[node_index]
 
   table = jnp.array(seq_halving.get_table_of_considered_visits(
       max_num_considered_actions, num_simulations))
   num_valid_actions = jnp.sum(
-      1 - tree.root_invalid_actions, axis=-1).astype(jnp.int32)
+      1 - root_invalid_actions, axis=-1).astype(jnp.int32)
   num_considered = jnp.minimum(
       max_num_considered_actions, num_valid_actions)
   chex.assert_shape(num_considered, ())
@@ -152,7 +211,7 @@ def gumbel_muzero_root_action_selection(
       visit_counts)
 
   # Masking the invalid actions at the root.
-  return masked_argmax(to_argmax, tree.root_invalid_actions)
+  return masked_argmax(to_argmax, root_invalid_actions)
 
 
 def gumbel_muzero_interior_action_selection(

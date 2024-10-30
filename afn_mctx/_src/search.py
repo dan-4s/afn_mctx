@@ -90,7 +90,7 @@ def search(
   if max_depth is None:
     max_depth = num_simulations
   if invalid_actions is None:
-    invalid_actions = jnp.zeros_like(root.prior_logits)
+    invalid_actions = jnp.zeros_like(root.prior_logits, dtype=bool)
 
   def body_fun(sim, loop_state):
     rng_key, tree = loop_state
@@ -232,11 +232,12 @@ def expand(
   # Evaluate and create a new node.
   step, embedding = recurrent_fn(params, rng_key, action, embedding)
   chex.assert_shape(step.prior_logits, [batch_size, tree.num_actions])
+  chex.assert_shape(step.legal_action_mask, [batch_size, tree.num_actions])
   chex.assert_shape(step.reward, [batch_size])
   chex.assert_shape(step.discount, [batch_size])
   chex.assert_shape(step.value, [batch_size])
   tree = update_tree_node(
-      tree, next_node_index, step.prior_logits, step.value, embedding)
+      tree, next_node_index, step.prior_logits, ~step.legal_action_mask, step.value, embedding)
 
   # Return updated tree topology.
   return tree.replace(
@@ -355,6 +356,7 @@ def update_tree_node(
     tree: Tree[T],
     node_index: chex.Array,
     prior_logits: chex.Array,
+    legal_action_mask: chex.Array,
     value: chex.Array,
     embedding: chex.Array) -> Tree[T]:
   """Updates the tree at node index.
@@ -363,6 +365,8 @@ def update_tree_node(
     tree: `Tree` to whose node is to be updated.
     node_index: the index of the expanded node. Shape `[B]`.
     prior_logits: the prior logits to fill in for the new node, of shape
+      `[B, num_actions]`.
+    legal_action_mask: the legal actions at a state, of shape
       `[B, num_actions]`.
     value: the value to fill in for the new node. Shape `[B]`.
     embedding: the state embeddings for the node. Shape `[B, ...]`.
@@ -382,6 +386,8 @@ def update_tree_node(
   updates = dict(  # pylint: disable=use-dict-literal
       children_prior_logits=batch_update(
           tree.children_prior_logits, prior_logits, node_index),
+      invalid_actions=batch_update(
+          tree.invalid_actions, legal_action_mask, node_index),
       raw_values=batch_update(
           tree.raw_values, value, node_index),
       node_values=batch_update(
@@ -411,6 +417,10 @@ def instantiate_tree_from_root(
   min_val = jnp.finfo(data_dtype).min
   batch_node = (batch_size, num_nodes)
   batch_node_action = (batch_size, num_nodes, num_actions)
+  assert root_invalid_actions.dtype == bool, f"Invalid action mask dtype is wrong. Expected: {bool}, got: {root_invalid_actions.dtype}"
+  invalid_actions = jnp.ones(batch_node_action, dtype=bool)
+  # Set the invalid actions at the root.
+  # invalid_actions = invalid_actions.at[:, 0].set(root_invalid_actions) # TODO: REMOVE
 
   def _zeros(x):
     return jnp.zeros(batch_node + x.shape[1:], dtype=x.dtype)
@@ -433,11 +443,11 @@ def instantiate_tree_from_root(
       children_discounts=jnp.zeros(batch_node_action, dtype=data_dtype),
       children_QF_const=jnp.zeros(batch_node_action, dtype=data_dtype),
       embeddings=jax.tree_util.tree_map(_zeros, root.embedding),
-      root_invalid_actions=root_invalid_actions,
+      invalid_actions=invalid_actions,
       extra_data=extra_data)
 
   root_index = jnp.full([batch_size], Tree.ROOT_INDEX)
   tree = update_tree_node(
-      tree, root_index, root.prior_logits, root.value, root.embedding)
+      tree, root_index, root.prior_logits, root_invalid_actions, root.value, root.embedding)
   # from mctx._src.search import instantiate_tree_from_root as inst_tree; root_out = mctx.RootFnOutput(prior_logits=jnp.array([[1, 2]]), value=jnp.array([10]), embedding=None); new_tree = inst_tree(root_out, 50, jnp.array([[0, 0]]), None);
   return tree

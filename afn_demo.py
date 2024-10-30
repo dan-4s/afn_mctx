@@ -101,7 +101,8 @@ def _run_aflownet_demo(
       max_depth=3,
       qtransform=functools.partial(
           afn_mctx.qtransform_completed_by_mix_value,
-          use_mixed_value=False),
+          use_mixed_value=False,
+          adversarial=adversarial),
       adversarial=adversarial,
       alpha=1.0, # Change to 10 if you want a spikier policy.
       omega=1.0, # Change to 10 if you want a spikier policy.
@@ -115,8 +116,10 @@ def _make_afn_recurrent_fn(game_obj: Game, num_actions: int, priors_method: str,
   """
   if(adversarial):
     QF_out = [jnp.array([11/101, 110/101]), jnp.array([10, 1]), jnp.array([1, 0.1])]
+    parent_flow = jnp.array([1.0, 11/101, 110/101])
   else:
     QF_out = [jnp.array([101/110, 101/11]), jnp.array([0.1, 1]), jnp.array([1, 10])]
+    parent_flow = jnp.array([8.43, 101/110, 101/11])
 
   def recurrent_fn(params, rng_key, action, states: GameState):
     del params
@@ -138,7 +141,7 @@ def _make_afn_recurrent_fn(game_obj: Game, num_actions: int, priors_method: str,
       def generate_QF(board_states: chex.Array):
         return jnp.select(
           condlist=[board_states == 0, board_states == 1, board_states == 2],
-          choicelist=[jnp.array([11/101, 110/101]), jnp.array([10, 1]), jnp.array([1, 0.1])],
+          choicelist=QF_out,
           default=0.5,
         ) 
       predicted_QF_gt = jax.vmap(generate_QF)(states.board)
@@ -148,7 +151,7 @@ def _make_afn_recurrent_fn(game_obj: Game, num_actions: int, priors_method: str,
       def generate_parent_flow(board_states: chex.Array):
         return jnp.select(
           condlist=[board_states == 0, board_states == 1, board_states == 2],
-          choicelist=[1, 11/101, 110/101],
+          choicelist=parent_flow,
           default=1.0,
         )
       predicted_flow_gt = jax.vmap(generate_parent_flow)(states.board)
@@ -184,6 +187,7 @@ def _make_afn_recurrent_fn(game_obj: Game, num_actions: int, priors_method: str,
         reward=reward, # Provide reward, but don't use it since it is already included in the flow.
         discount=discount,
         prior_logits=predicted_QF,
+        legal_action_mask=jnp.ones((batch_size, num_actions), dtype=bool),
         value=predicted_flow,
     )
     return recurrent_fn_output, states
@@ -193,15 +197,7 @@ def _make_afn_recurrent_fn(game_obj: Game, num_actions: int, priors_method: str,
 
 def main(_):
   rng_key = jax.random.PRNGKey(FLAGS.seed) # TODO: Change the seed.
-  # print("\n================================")
-  # print("\tAlphaZero demos")
-  # for i in range(FLAGS.num_runs):
-  #   rng_key, policy_output = jitted_run_demo(rng_key)
-
-  #   avg_action_weights = jnp.average(policy_output.action_weights, axis=0)
-  #   print(f"Run {i+1} results")
-  #   print(f"\tP(s1 | s0) = {avg_action_weights[0]:.2f}")
-  #   print(f"\tP(s2 | s0) = {avg_action_weights[1]:.2f}")
+  adversarial = False
   
   print("\n============================")
   print("\tAFN demos")
@@ -210,7 +206,7 @@ def main(_):
   # num_sims = [1000] # TODO: TESTING!!
   # noise_schedule = [0.0] # TODO: TESTING!!
   noise_schedule = jnp.arange(start=0, stop=2.1, step=0.2)
-  gt_flows = jnp.array([1.0, 11/101, 110/101])
+  gt_flows = jnp.where(adversarial, jnp.array([1.0, 11/101, 110/101]), jnp.array([8.43, 101/110, 101/11]))
   gt_log_flows = jnp.log(gt_flows)
   sims_to_errors = {}
   sims_to_KLs = {}
@@ -219,7 +215,7 @@ def main(_):
     all_KLs = []
     for i in range(len(noise_schedule)):
       #We'll reuse the same rng_key for all experiments.
-      _, policy_output = jitted_run_demo(rng_key, sims, "mixed", noise_schedule[i], False)
+      _, policy_output = jitted_run_demo(rng_key, sims, "mixed", noise_schedule[i], adversarial)
 
       # Compute the error on the estimated flows.
       tree = policy_output.search_tree
@@ -237,15 +233,15 @@ def main(_):
       avg_policy_div = jnp.average(policy_div)
       all_KLs.append(avg_policy_div)
 
-      print(jnp.exp(tree.children_values[0, 0:9]))
-      print(jnp.exp(tree.node_values[0, 0:9]))
-      print(tree.parents[0, 0:9])
-      print(tree.action_from_parent[0, 0:9])
+      # print(jnp.exp(tree.children_values[0, 0:9]))
+      # print(jnp.exp(tree.node_values[0, 0:9]))
+      # print(tree.parents[0, 0:9])
+      # print(tree.action_from_parent[0, 0:9])
 
-      print(f"Ground truth policy: {jax.nn.softmax(gt_log_flows[1:])}")
-      print(f"Policy from MCTS children flows: {jax.nn.softmax(tree.children_values[0, 0])}")
-      print(f"Gumbel policy 1st iteration: {policy_output.action_weights[0]}")
-      breakpoint()
+      # print(f"Ground truth policy: {jax.nn.softmax(gt_log_flows[1:])}")
+      # print(f"Policy from MCTS children flows: {jax.nn.softmax(tree.children_values[0, 0])}")
+      # print(f"Gumbel policy 1st iteration: {policy_output.action_weights[0]}")
+      # breakpoint()
     sims_to_errors[sims] = all_errors
     sims_to_KLs[sims] = all_KLs
   

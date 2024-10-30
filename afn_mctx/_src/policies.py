@@ -87,19 +87,48 @@ def gumbel_aflownet_policy(
 
   # Searching.
   extra_data = action_selection.GumbelMuZeroExtraData(root_gumbel=gumbel)
+  # search_tree = search.search(
+  #     params=params,
+  #     rng_key=rng_key,
+  #     root=root,
+  #     recurrent_fn=recurrent_fn,
+  #     root_action_selection_fn=functools.partial(
+  #         action_selection.gumbel_muzero_root_action_selection,
+  #         num_simulations=num_simulations,
+  #         max_num_considered_actions=max_num_considered_actions,
+  #         qtransform=qtransform,
+  #     ),
+  #     interior_action_selection_fn=functools.partial(
+  #         action_selection.gumbel_muzero_interior_action_selection,
+  #         qtransform=qtransform,
+  #     ),
+  #     num_simulations=num_simulations,
+  #     max_depth=max_depth,
+  #     invalid_actions=invalid_actions,
+  #     extra_data=extra_data,
+  #     loop_fn=loop_fn,
+  #     adversarial=adversarial,
+  #     alpha=alpha,
+  #     omega=omega,
+  # )
+  # TODO: TESTING SOFT ACTIONS!!!
   search_tree = search.search(
       params=params,
       rng_key=rng_key,
       root=root,
       recurrent_fn=recurrent_fn,
       root_action_selection_fn=functools.partial(
-          action_selection.gumbel_muzero_root_action_selection,
-          num_simulations=num_simulations,
-          max_num_considered_actions=max_num_considered_actions,
+          action_selection.soft_sampling_fn,
+          alpha=alpha,
+          omega=omega,
+          adversarial=adversarial,
           qtransform=qtransform,
       ),
       interior_action_selection_fn=functools.partial(
-          action_selection.gumbel_muzero_interior_action_selection,
+          action_selection.soft_sampling_fn,
+          alpha=alpha,
+          omega=omega,
+          adversarial=adversarial,
           qtransform=qtransform,
       ),
       num_simulations=num_simulations,

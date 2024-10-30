@@ -37,12 +37,14 @@ class RecurrentFnOutput:
   reward: `[B]` an approximate reward from the state-action transition.
   discount: `[B]` the discount between the `reward` and the `value`.
   prior_logits: `[B, num_actions]` the logits produced by a policy network.
+  legal_action_mask: `[B, num_actions]` the legal actions in a state.
   value: `[B]` an approximate value of the state after the state-action
     transition.
   """
   reward: chex.Array
   discount: chex.Array
   prior_logits: chex.Array
+  legal_action_mask: chex.Array
   value: chex.Array
 
 

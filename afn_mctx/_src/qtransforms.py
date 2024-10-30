@@ -89,9 +89,10 @@ def qtransform_completed_by_mix_value(
     node_index: chex.Numeric,
     *,
     value_scale: chex.Numeric = 0.1,
-    maxvisit_init: chex.Numeric = 1.0, # 50.0,
+    maxvisit_init: chex.Numeric = 1.0, #50.0,
     rescale_values: bool = True,
     use_mixed_value: bool = True,
+    adversarial: bool = False,
     epsilon: chex.Numeric = 1e-8,
 ) -> chex.Array:
   """Returns completed qvalues.
@@ -112,6 +113,7 @@ def qtransform_completed_by_mix_value(
     rescale_values: if True, scale the qvalues by `1 / (max_q - min_q)`.
     use_mixed_value: if True, complete the Q-values with mixed value,
       otherwise complete the Q-values with the raw value.
+    adversarial: Flag whether the environment is adversarial.
     epsilon: the minimum denominator when using `rescale_values`.
 
   Returns:
@@ -122,7 +124,9 @@ def qtransform_completed_by_mix_value(
   visit_counts = tree.children_visits[node_index]
 
   # Computing the mixed value and producing completed_qvalues.
-  raw_value = -tree.raw_values[node_index]
+  coeff = jnp.where(adversarial, -1, 1)
+  raw_value = coeff * tree.raw_values[node_index]
+  
   # TODO: investigate whether we can use children_values instead of the prior
   # logits here. It would give more accurate flow and probability estimates.
   # I don't think this line is too consequential, however...
@@ -144,8 +148,8 @@ def qtransform_completed_by_mix_value(
     completed_qvalues = _rescale_qvalues(completed_qvalues, epsilon)
   maxvisit = jnp.max(visit_counts, axis=-1)
   visit_scale = maxvisit_init + maxvisit
+  return value_scale * completed_qvalues # For AFNs, and mellow max, much more stable!!!
   # return visit_scale * value_scale * completed_qvalues
-  return value_scale * completed_qvalues
 
 
 def _rescale_qvalues(qvalues, epsilon):
