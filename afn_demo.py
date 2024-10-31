@@ -97,11 +97,10 @@ def _run_aflownet_demo(
       root=root,
       recurrent_fn=recurrent_fn,
       num_simulations=num_simulations,
-      max_num_considered_actions=max_num_considered_actions,
       max_depth=3,
       qtransform=functools.partial(
           afn_mctx.qtransform_by_completion,
-          adversarial=adversarial), # TODO: Hide this partial in the policy.
+          adversarial=adversarial),
       adversarial=adversarial,
       alpha=1.0, # Change to 10 if you want a spikier policy.
       omega=1.0, # Change to 10 if you want a spikier policy.
@@ -233,15 +232,15 @@ def main(_):
       avg_policy_div = jnp.average(policy_div)
       all_KLs.append(avg_policy_div)
 
-      # print(jnp.exp(tree.children_values[0, 0:9]))
-      # print(jnp.exp(tree.node_values[0, 0:9]))
-      # print(tree.parents[0, 0:9])
-      # print(tree.action_from_parent[0, 0:9])
+      print(jnp.exp(tree.children_values[0, 0:9]))
+      print(jnp.exp(tree.node_values[0, 0:9]))
+      print(tree.parents[0, 0:9])
+      print(tree.action_from_parent[0, 0:9])
 
-      # print(f"Ground truth policy: {jax.nn.softmax(gt_log_flows[1:])}")
-      # print(f"Policy from MCTS children flows: {jax.nn.softmax(tree.children_values[0, 0])}")
-      # print(f"Gumbel policy 1st iteration: {policy_output.action_weights[0]}")
-      # breakpoint()
+      print(f"Ground truth policy: {jax.nn.softmax(gt_log_flows[1:])}")
+      print(f"Policy from MCTS children flows: {jax.nn.softmax(tree.children_values[0, 0])}")
+      print(f"Gumbel policy 1st iteration: {policy_output.action_weights[0]}")
+      breakpoint()
     sims_to_errors[sims] = all_errors
     sims_to_KLs[sims] = all_KLs
   

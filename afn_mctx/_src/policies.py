@@ -14,7 +14,7 @@
 # ==============================================================================
 """Search policies."""
 import functools
-from typing import Optional, Tuple
+from typing import Optional
 
 import chex
 import jax
@@ -24,7 +24,7 @@ from afn_mctx._src import action_selection
 from afn_mctx._src import base
 from afn_mctx._src import qtransforms
 from afn_mctx._src import search
-from afn_mctx._src import seq_halving
+from afn_mctx._src.tree import infer_batch_size
 
 
 def gumbel_aflownet_policy(
@@ -42,7 +42,6 @@ def gumbel_aflownet_policy(
     alpha: float = 1.0,
     omega: float = 1.0,
     epsilon: float = 0.1,
-    max_num_considered_actions: int = 16,
     gumbel_scale: chex.Numeric = 1.,
 ) -> base.PolicyOutput[action_selection.GumbelMuZeroExtraData]:
   """Runs Gumbel search for AFlowNets and returns the `PolicyOutput`.
@@ -83,30 +82,25 @@ def gumbel_aflownet_policy(
       prior_logits=_mask_invalid_actions(root.prior_logits, invalid_actions))
 
   # Generating Gumbel.
-  rng_key, gumbel_rng = jax.random.split(rng_key)
+  sample_key, search_key, gumbel_rng = jax.random.split(rng_key, 3)
   gumbel = gumbel_scale * jax.random.gumbel(
       gumbel_rng, shape=root.prior_logits.shape, dtype=root.prior_logits.dtype)
 
   # Searching.
   extra_data = action_selection.GumbelMuZeroExtraData(root_gumbel=gumbel)
-  # TODO: TESTING SOFT ACTIONS!!!
+  action_selection_fn = functools.partial(
+      action_selection.soft_sampling_fn,
+      alpha=alpha,
+      epsilon=epsilon,
+      qtransform=qtransform,
+  )
   search_tree = search.search(
       params=params,
-      rng_key=rng_key,
+      rng_key=search_key,
       root=root,
       recurrent_fn=recurrent_fn,
-      root_action_selection_fn=functools.partial(
-          action_selection.soft_sampling_fn,
-          alpha=alpha,
-          epsilon=epsilon,
-          qtransform=qtransform,
-      ),
-      interior_action_selection_fn=functools.partial(
-          action_selection.soft_sampling_fn,
-          alpha=alpha,
-          epsilon=epsilon,
-          qtransform=qtransform,
-      ),
+      root_action_selection_fn=action_selection_fn,
+      interior_action_selection_fn=action_selection_fn,
       num_simulations=num_simulations,
       max_depth=max_depth,
       invalid_actions=invalid_actions,
@@ -116,28 +110,20 @@ def gumbel_aflownet_policy(
       alpha=alpha,
       omega=omega,
   )
-  summary = search_tree.summary()
 
-  # Acting with the best action from the most visited actions.
-  # The "best" action has the highest `gumbel + logits + q`.
-  # Inside the minibatch, the considered_visit can be different on states with
-  # a smaller number of valid actions.
-  considered_visit = jnp.max(summary.visit_counts, axis=-1, keepdims=True)
-  # The completed_qvalues include imputed values for unvisited actions.
+  # Acting with a randomly selected action from the soft mellowmax policy.
   completed_qvalues = jax.vmap(qtransform, in_axes=[0, None])(  # pytype: disable=wrong-arg-types  # numpy-scalars  # pylint: disable=line-too-long
       search_tree, search_tree.ROOT_INDEX)
-  to_argmax = seq_halving.score_considered(
-      considered_visit, gumbel, root.prior_logits, completed_qvalues,
-      summary.visit_counts)
-  action = action_selection.masked_argmax(to_argmax, invalid_actions)
+  completed_qvalues = _mask_invalid_actions(completed_qvalues, invalid_actions)
+  
+  # Compute the action weights, i.e., policy, according to soft mellowmax.
+  action_weights = jax.nn.softmax(alpha * completed_qvalues)
 
-  # Producing action_weights usable to train the policy network.
-  completed_search_logits = _mask_invalid_actions(
-      root.prior_logits + completed_qvalues, invalid_actions)
-  # Corresponds to \pi^\alpha(s_0).
-  action_weights = jax.nn.softmax(alpha * completed_search_logits)
+  actions = jax.random.categorical(key=sample_key, logits=action_weights, axis=-1)
+  chex.assert_shape([actions], (infer_batch_size(search_tree),))
+
   return base.PolicyOutput(
-      action=action,
+      action=actions,
       action_weights=action_weights,
       search_tree=search_tree)
 
