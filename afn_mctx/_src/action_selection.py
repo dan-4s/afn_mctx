@@ -91,12 +91,16 @@ def soft_sampling_fn(
   uniform_policy = jnp.ones_like(parent_policy) / num_actions
   lambda_t = epsilon * num_actions / jnp.log(num_simulations + 2)
   E2W_policy = (1 - lambda_t) * parent_policy + lambda_t * uniform_policy
+
+  # Convert to log-space for the categorical choice later (should be log-stable,
+  # since jnp.log(0) = -inf), however, may cause unexpected errors.
+  E2W_logits = jnp.log(E2W_policy)
   
   # Mask invalid actions.
   E2W_logits = jnp.where(
       invalid_actions,
       -jnp.inf,
-      E2W_policy,
+      E2W_logits,
   )
 
   # Sample from the constructed parent policy.

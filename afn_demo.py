@@ -97,6 +97,7 @@ def _run_aflownet_demo(
       root=root,
       recurrent_fn=recurrent_fn,
       num_simulations=num_simulations,
+      # invalid_actions=jnp.array([[True, False]]*batch_size), # TODO: TESTING
       max_depth=3,
       qtransform=functools.partial(
           afn_mctx.qtransform_by_completion,
