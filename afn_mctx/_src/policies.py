@@ -37,10 +37,11 @@ def gumbel_aflownet_policy(
     max_depth: Optional[int] = None,
     loop_fn: base.LoopFn = jax.lax.fori_loop,
     *,
-    qtransform: base.QTransform = qtransforms.qtransform_completed_by_mix_value,
+    qtransform: base.QTransform = qtransforms.qtransform_by_completion,
     adversarial: bool = False,
     alpha: float = 1.0,
     omega: float = 1.0,
+    epsilon: float = 0.1,
     max_num_considered_actions: int = 16,
     gumbel_scale: chex.Numeric = 1.,
 ) -> base.PolicyOutput[action_selection.GumbelMuZeroExtraData]:
@@ -65,7 +66,8 @@ def gumbel_aflownet_policy(
     qtransform: function to obtain completed Q-values for a node.
     adversarial: Indicates whether this is an adversarial problem.
     alpha: The hyperparameter that dictates the "softness" of flow propagation.
-    alpha: The hyperparameter that dictates the temperature of flow propagation.
+    omega: The hyperparameter that dictates the temperature of flow propagation.
+    epsilon: E2W exploration hyperparameter.
     max_num_considered_actions: the maximum number of actions expanded at the
       root node. A smaller number of actions will be expanded if the number of
       valid actions is smaller.
@@ -87,30 +89,6 @@ def gumbel_aflownet_policy(
 
   # Searching.
   extra_data = action_selection.GumbelMuZeroExtraData(root_gumbel=gumbel)
-  # search_tree = search.search(
-  #     params=params,
-  #     rng_key=rng_key,
-  #     root=root,
-  #     recurrent_fn=recurrent_fn,
-  #     root_action_selection_fn=functools.partial(
-  #         action_selection.gumbel_muzero_root_action_selection,
-  #         num_simulations=num_simulations,
-  #         max_num_considered_actions=max_num_considered_actions,
-  #         qtransform=qtransform,
-  #     ),
-  #     interior_action_selection_fn=functools.partial(
-  #         action_selection.gumbel_muzero_interior_action_selection,
-  #         qtransform=qtransform,
-  #     ),
-  #     num_simulations=num_simulations,
-  #     max_depth=max_depth,
-  #     invalid_actions=invalid_actions,
-  #     extra_data=extra_data,
-  #     loop_fn=loop_fn,
-  #     adversarial=adversarial,
-  #     alpha=alpha,
-  #     omega=omega,
-  # )
   # TODO: TESTING SOFT ACTIONS!!!
   search_tree = search.search(
       params=params,
@@ -120,15 +98,13 @@ def gumbel_aflownet_policy(
       root_action_selection_fn=functools.partial(
           action_selection.soft_sampling_fn,
           alpha=alpha,
-          omega=omega,
-          adversarial=adversarial,
+          epsilon=epsilon,
           qtransform=qtransform,
       ),
       interior_action_selection_fn=functools.partial(
           action_selection.soft_sampling_fn,
           alpha=alpha,
-          omega=omega,
-          adversarial=adversarial,
+          epsilon=epsilon,
           qtransform=qtransform,
       ),
       num_simulations=num_simulations,

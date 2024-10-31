@@ -38,10 +38,9 @@ def switching_action_selection_wrapper(
       depth: base.Depth) -> chex.Array:
     return jax.lax.cond(
         depth == 0,
-        # lambda x: root_action_selection_fn(*x[:3]),
-        lambda x: root_action_selection_fn(*x[:4]),
+        lambda x: root_action_selection_fn(*x),
         lambda x: interior_action_selection_fn(*x),
-        (rng_key, tree, node_index, depth))
+        (rng_key, tree, node_index))
 
   return switching_action_selection_fn
 
@@ -50,12 +49,10 @@ def soft_sampling_fn(
       rng_key: chex.PRNGKey,
       tree: tree_lib.Tree,
       node_index: base.NodeIndices,
-      depth: base.Depth,
       *,
       alpha: float = 1.0,
-      omega: float = 1.0,
-      adversarial: bool = False,
-      qtransform: base.QTransform = qtransforms.qtransform_completed_by_mix_value, # TODO: Define a new Q-transform. 
+      epsilon: float = 0.1,
+      qtransform: base.QTransform = qtransforms.qtransform_by_completion,
 ) -> chex.Array:
   """
   Returns the stochastically selected action from the soft mellowmax policy
@@ -68,9 +65,9 @@ def soft_sampling_fn(
     tree: _unbatched_ MCTS tree state.
     node_index: scalar index of the node from which to select an action.
     depth: the scalar depth of the current node. The root has depth zero.
-    alpha: constant c_1 in the PUCT formula.
-    omage: constant c_2 in the PUCT formula.
+    alpha: spikyness hyperparameter for AFNs / mellowmax.
     adversarial: `bool` whether the environment is adversarial.
+    epsilon: exploration constant for E2W.
     qtransform: a monotonic transformation of the Q-values.
 
   Returns:
@@ -85,19 +82,25 @@ def soft_sampling_fn(
   chex.assert_equal_shape([visit_counts, prior_logits])
   completed_qvalues = qtransform(tree, node_index)
   invalid_actions = tree.invalid_actions[node_index]
+  num_actions = tree.num_actions
+  num_simulations = tree.num_simulations
 
-  # Construct the soft mellowmax policy: exp(alpha * whatever) / sum(...).
-  parent_logits = alpha * completed_qvalues # TODO: Add random noise which decays with num_simulations!!!
+  # Construct the soft mellowmax policy: exp(alpha * F) / sum(...). Then,
+  # construct the uniform policy and the E2W policy from the MENTS paper.
+  parent_policy = jax.nn.softmax(alpha * completed_qvalues)
+  uniform_policy = jnp.ones_like(parent_policy) / num_actions
+  lambda_t = epsilon * num_actions / jnp.log(num_simulations + 2)
+  E2W_policy = (1 - lambda_t) * parent_policy + lambda_t * uniform_policy
   
   # Mask invalid actions.
-  parent_logits = jnp.where(
+  E2W_logits = jnp.where(
       invalid_actions,
       -jnp.inf,
-      parent_logits,
+      E2W_policy,
   )
 
   # Sample from the constructed parent policy.
-  actions = jax.random.categorical(key=cat_key, logits=parent_logits, axis=-1)
+  actions = jax.random.categorical(key=cat_key, logits=E2W_logits, axis=-1)
   chex.assert_shape([actions], ())
 
   return actions

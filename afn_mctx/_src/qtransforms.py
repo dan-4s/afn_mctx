@@ -21,6 +21,36 @@ import jax.numpy as jnp
 from afn_mctx._src import tree as tree_lib
 
 
+def qtransform_by_completion(
+    tree: tree_lib.Tree,
+    node_index: chex.Numeric,
+    *,
+    adversarial: bool = False,
+):
+  """
+  Simply return the completed Q-values.
+
+  Args:
+    tree: _unbatched_ MCTS tree state.
+    node_index: scalar index of the parent node.
+    adversarial: whether the environment is adversarial.
+  
+  Returns:
+    Completed Q-values, where unvisited actions have their Q-values filled in.
+  """
+  visit_counts = tree.children_visits[node_index]
+  qvalues = tree.qvalues(node_index)
+
+  # Computing the value and producing completed_qvalues.
+  coeff = jnp.where(adversarial, -1, 1)
+  raw_value = coeff * tree.raw_values[node_index]
+  
+  completed_qvalues = _complete_qvalues(
+      qvalues, visit_counts=visit_counts, value=raw_value)
+  
+  return completed_qvalues
+
+
 def qtransform_by_min_max(
     tree: tree_lib.Tree,
     node_index: chex.Numeric,

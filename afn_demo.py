@@ -100,12 +100,12 @@ def _run_aflownet_demo(
       max_num_considered_actions=max_num_considered_actions,
       max_depth=3,
       qtransform=functools.partial(
-          afn_mctx.qtransform_completed_by_mix_value,
-          use_mixed_value=False,
-          adversarial=adversarial),
+          afn_mctx.qtransform_by_completion,
+          adversarial=adversarial), # TODO: Hide this partial in the policy.
       adversarial=adversarial,
       alpha=1.0, # Change to 10 if you want a spikier policy.
       omega=1.0, # Change to 10 if you want a spikier policy.
+      epsilon=0.1, # Increase to get a more random sampling.
   )
 
   return rng_key, policy_output
